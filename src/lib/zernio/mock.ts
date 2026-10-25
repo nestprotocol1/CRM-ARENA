@@ -71,6 +71,13 @@ function seedConversations(): MockConversation[] {
   });
 }
 
+/**
+ * Prefijo único por instancia de proceso. La base persiste entre reinicios
+ * pero el mock arranca su contador de cero: sin el prefijo, los ids se
+ * repetirían y chocarían con el índice único de idempotencia.
+ */
+const INSTANCE = Math.random().toString(36).slice(2, 8);
+
 class MockZernioState {
   accounts: MockAccount[] = DEMO_ACCOUNTS.map((a, i) => ({
     id: a.id,
@@ -85,7 +92,7 @@ class MockZernioState {
 
   nextId(prefix: string): string {
     this.counter += 1;
-    return `${prefix}_${this.counter}`;
+    return `${prefix}_${INSTANCE}_${this.counter}`;
   }
 }
 
