@@ -1,0 +1,4 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "if [ -n \"$DATABASE_URL\" ]; then echo '[vercel] aplicando migraciones antes del build'; npm run db:migrate || exit 1; fi && npm run build"
+}

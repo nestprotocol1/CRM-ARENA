@@ -1,0 +1,27 @@
+# Barrido de recuperación cada 30 minutos.
+#
+# OJO CON EL CRON: el plan gratuito de Vercel solo admite UN cron por día y una
+# expresión más frecuente HACE FALLAR EL DEPLOY. GitHub Actions factura por
+# minuto REDONDEADO HACIA ARRIBA por ejecución, aunque el curl tarde diez
+# segundos: cada 10 minutos serían 4.320 minutos al mes contra 2.000 gratis
+# (USD 18,56/mes). Cada 30 minutos entra gratis y alcanza de sobra, porque
+# esto es una red de seguridad y no el camino normal.
+
+name: backfill
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: # para correrlo a mano desde la pestaña Actions
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Barrido de recuperación
+        run: |
+          curl -sS -f -X POST "${{ secrets.APP_URL }}/api/backfill" \
+            -H "Authorization: Bearer ${{ secrets.BACKFILL_TOKEN }}" \
+            --max-time 55
+        env:
+          APP_URL: ${{ secrets.APP_URL }}

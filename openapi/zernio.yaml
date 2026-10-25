@@ -1,0 +1,637 @@
+openapi: 3.1.0
+info:
+  title: Zernio API — subset que consume el CRM
+  version: "1.0.0"
+  description: >
+    Espejo LOCAL del contrato real de Zernio (https://zernio.com/api).
+    Fuente de verdad: SDK oficial @zernio/node v0.2.1321, generado del
+    OpenAPI interno de Zernio. Los tipos de src/lib/zernio/types.ts se
+    ajustan a este archivo, nunca al revés.
+
+    OJO (trampa #1): los nombres de los WEBHOOK payloads son distintos a los
+    de las respuestas REST. Están separados a propósito.
+
+servers:
+  - url: https://zernio.com/api
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      summary: Cuentas conectadas del perfil
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SocialAccount"
+
+  /v1/profiles:
+    get:
+      operationId: listProfiles
+      summary: Perfiles del usuario (necesario para OAuth)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        _id: { type: string }
+                        name: { type: string }
+
+  /v1/connect/{platform}:
+    get:
+      operationId: getConnectUrl
+      summary: Pide la URL de autorización OAuth (NO se construye a mano)
+      parameters:
+        - name: platform
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [facebook, instagram, whatsapp, telegram, linkedin, twitter, tiktok, youtube, threads, reddit, pinterest, bluesky, googlebusiness, snapchat, discord, slack]
+        - name: profileId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: redirect_url
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authUrl: { type: string }
+                  state: { type: string }
+
+  /v1/inbox/conversations:
+    get:
+      operationId: listInboxConversations
+      summary: Lista de conversaciones de la bandeja
+      parameters:
+        - name: accountId
+          in: query
+          schema: { type: string }
+        - name: platform
+          in: query
+          schema:
+            type: string
+            enum: [facebook, instagram, twitter, bluesky, reddit, telegram, whatsapp, imessage, sms]
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: number }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived]
+        - name: folder
+          in: query
+          schema:
+            type: string
+            enum: [inbox, requests]
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RestConversation"
+                  pagination:
+                    type: object
+                    properties:
+                      hasMore: { type: boolean }
+                      nextCursor: { type: [string, "null"] }
+    post:
+      operationId: createInboxConversation
+      summary: Abre un hilo NUEVO (endpoint distinto al de responder)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId]
+              properties:
+                accountId: { type: string }
+                participantId: { type: string }
+                participantUsername: { type: string }
+                message: { type: string }
+                templateName: { type: string }
+                templateLanguage: { type: string }
+                templateParams:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /v1/inbox/conversations/{conversationId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string }
+        description: Id interno de Zernio O platformConversationId (ambos se aceptan).
+    get:
+      operationId: getInboxConversation
+      summary: Detalle de una conversación
+      responses:
+        "200":
+          description: OK
+
+  /v1/inbox/conversations/{conversationId}/messages:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: listInboxConversationMessages
+      summary: Mensajes del hilo
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RestMessage"
+                  pagination:
+                    type: object
+                    properties:
+                      hasMore: { type: boolean }
+                      nextCursor: { type: [string, "null"] }
+    post:
+      operationId: sendInboxMessage
+      summary: Responde en un hilo ABIERTO
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      messageId: { type: string }
+                      conversationId: { type: string }
+
+  /v1/inbox/conversations/{conversationId}/read:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: markInboxConversationRead
+      summary: Marca el hilo como leído
+      responses:
+        "200":
+          description: OK
+
+  /v1/webhooks/settings:
+    get:
+      operationId: getWebhookSettings
+      summary: Webhooks configurados
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Webhook"
+    post:
+      operationId: createWebhookSettings
+      summary: Crea (o actualiza) un webhook. El SECRETO lo manda el cliente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url, events]
+              properties:
+                name: { type: string }
+                url: { type: string }
+                secret:
+                  type: string
+                  description: Secreto elegido por el cliente para la firma HMAC.
+                events:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/WebhookEventName"
+                isActive: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  webhook:
+                    $ref: "#/components/schemas/Webhook"
+    put:
+      operationId: updateWebhookSettings
+      summary: Actualiza un webhook existente (por webhookId)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                webhookId: { type: string }
+                name: { type: string }
+                url: { type: string }
+                secret: { type: string }
+                events:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/WebhookEventName"
+      responses:
+        "200":
+          description: OK
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    SocialAccount:
+      type: object
+      properties:
+        _id: { type: string }
+        platform: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        profilePicture: { type: [string, "null"] }
+        isActive: { type: boolean }
+        needsReconnection: { type: boolean }
+
+    RestConversation:
+      type: object
+      description: >
+        Fila de GET /v1/inbox/conversations. `id` de esta lista ES el
+        platformConversationId del webhook: es la clave con la que se
+        matchean filas de lista con eventos.
+      properties:
+        id: { type: string }
+        platform: { type: string }
+        accountId: { type: string }
+        accountUsername: { type: string }
+        participantId: { type: string }
+        participantName: { type: string }
+        participantPicture: { type: [string, "null"] }
+        lastMessage: { type: string }
+        updatedTime: { type: string }
+        status:
+          type: string
+          enum: [active, archived]
+        unreadCount: { type: [number, "null"] }
+        threadControl:
+          type: string
+          enum: [app, ai_agent, other]
+        businessScopedUserId: { type: string }
+        whatsappUsername: { type: string }
+
+    RestMessage:
+      type: object
+      properties:
+        id: { type: string }
+        conversationId: { type: string }
+        accountId: { type: string }
+        platform: { type: string }
+        message: { type: [string, "null"] }
+        senderId: { type: string }
+        senderName: { type: [string, "null"] }
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        createdAt: { type: string }
+        attachments:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              type: { type: string }
+              url: { type: string }
+
+    SendMessageRequest:
+      type: object
+      required: [accountId]
+      properties:
+        accountId:
+          type: string
+          description: Obligatorio en el body.
+        message: { type: string }
+        attachmentUrl: { type: string }
+        attachmentType:
+          type: string
+          enum: [image, video, audio, file]
+        attachmentName: { type: string }
+        category:
+          type: string
+          enum: [utility]
+        template:
+          type: object
+          description: Plantilla de WhatsApp; obligatoria fuera de la ventana de 24h.
+          properties:
+            name: { type: string }
+            language: { type: string }
+            components:
+              type: array
+              items: {}
+
+    Webhook:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        url: { type: string }
+        secret: { type: string }
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventName"
+        isActive: { type: boolean }
+        lastFiredAt: { type: string }
+        failureCount: { type: number }
+
+    WebhookEventName:
+      type: string
+      description: >
+        Nombres REALES de eventos. Los que consume el CRM son los de inbox y
+        los de cuenta.
+      enum:
+        # inbox
+        - message.received
+        - message.sent
+        - message.edited
+        - message.deleted
+        - message.delivered
+        - message.read
+        - message.played
+        - message.failed
+        - conversation.started
+        - conversation.control_changed
+        - reaction.received
+        - referral.received
+        - comment.received
+        - review.new
+        - review.updated
+        # cuentas
+        - account.connected
+        - account.disconnected
+
+    /* ---------------- payloads del webhook ---------------- */
+
+    WebhookAccount:
+      type: object
+      properties:
+        id: { type: string }
+        accountId: { type: string }
+        profileId: { type: string }
+        platform: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+
+    WebhookConversation:
+      type: object
+      description: Bloque conversation de los eventos message.*
+      properties:
+        id:
+          type: string
+          description: Id INTERNO de Zernio.
+        platformConversationId:
+          type: string
+          description: >
+            Id de la plataforma. El CRM clavea sus conversaciones por este
+            campo (es también el `id` de GET /v1/inbox/conversations).
+        participantId: { type: string }
+        participantName: { type: string }
+        participantUsername: { type: string }
+        participantPicture: { type: string }
+        status:
+          type: string
+          enum: [active, archived]
+        contactId: { type: string }
+
+    WebhookConversationDetail:
+      type: object
+      description: >
+        Bloque conversation de los eventos de ciclo de vida. Acá `id` SÍ es
+        el id de plataforma.
+      properties:
+        id: { type: string }
+        platform: { type: string }
+        platformConversationId: { type: string }
+        participantId: { type: string }
+        participantName: { type: string }
+        participantUsername: { type: string }
+        status:
+          type: string
+          enum: [active, archived]
+        contactId: { type: string }
+
+    WebhookMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Id interno del mensaje (clave de idempotencia).
+        conversationId: { type: string }
+        platform: { type: string }
+        platformMessageId: { type: string }
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        text: { type: [string, "null"] }
+        attachments:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              url: { type: string }
+        sender:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            username: { type: string }
+            picture: { type: string }
+            phoneNumber: { type: [string, "null"] }
+            businessScopedUserId: { type: string }
+        sentAt:
+          type: string
+          description: ISO 8601 tal cual lo reporta la plataforma. Clave de orden.
+        isRead: { type: boolean }
+
+    WebhookPayloadMessage:
+      description: message.received | message.sent | message.edited | message.deleted
+      type: object
+      required: [id, event, message, conversation, account]
+      properties:
+        id:
+          type: string
+          description: Id estable del evento (dedupe key); = header X-Zernio-Event-Id.
+        event:
+          type: string
+          enum: [message.received, message.sent, message.edited, message.deleted]
+        test: { type: boolean }
+        message:
+          $ref: "#/components/schemas/WebhookMessage"
+        conversation:
+          $ref: "#/components/schemas/WebhookConversation"
+        account:
+          $ref: "#/components/schemas/WebhookAccount"
+        metadata:
+          type: object
+          properties:
+            referral:
+              type: object
+              properties:
+                source: { type: string }
+                campaignId: { type: string }
+                adsetId: { type: string }
+                adId: { type: string }
+        timestamp: { type: string }
+
+    WebhookPayloadDeliveryStatus:
+      description: message.delivered | message.read | message.played | message.failed
+      type: object
+      required: [id, event, message, statusAt, conversation, account]
+      properties:
+        id: { type: string }
+        event:
+          type: string
+          enum: [message.delivered, message.read, message.played, message.failed]
+        message:
+          $ref: "#/components/schemas/WebhookMessage"
+        statusAt: { type: string }
+        error:
+          type: [object, "null"]
+          properties:
+            code: { type: number }
+            title: { type: string }
+            message: { type: string }
+        conversation:
+          $ref: "#/components/schemas/WebhookConversation"
+        account:
+          $ref: "#/components/schemas/WebhookAccount"
+
+    WebhookPayloadConversationEvent:
+      description: conversation.started | conversation.control_changed
+      type: object
+      required: [id, event, conversation, account]
+      properties:
+        id: { type: string }
+        event:
+          type: string
+          enum: [conversation.started, conversation.control_changed]
+        conversation:
+          $ref: "#/components/schemas/WebhookConversationDetail"
+        account:
+          $ref: "#/components/schemas/WebhookAccount"
+        control:
+          type: object
+          description: Solo en control_changed (handover de Meta Business Agent).
+          properties:
+            owner:
+              type: string
+              enum: [app, ai_agent, other]
+            previousOwner:
+              type: [string, "null"]
+              enum: [app, ai_agent, other, null]
+
+    WebhookPayloadAccountEvent:
+      description: account.connected | account.disconnected
+      type: object
+      required: [id, event, account]
+      properties:
+        id: { type: string }
+        event:
+          type: string
+          enum: [account.connected, account.disconnected]
+        account:
+          $ref: "#/components/schemas/WebhookAccount"
+
+x-webhook-delivery:
+  description: >
+    Reglas de entrega del proveedor (de la documentación pública).
+  timeoutSeconds: 5
+  retries: 7
+  retryBackoff: exponencial, tope 24h
+  delivery: at-least-once
+  headers:
+    X-Zernio-Event: nombre del evento
+    X-Zernio-Event-Id: id estable del evento (dedupe key)
+    X-Zernio-Signature: HMAC-SHA256 hex del body crudo con el secreto del cliente
+  notes: >
+    Responder 2xx rápido y procesar pesado en background (after()). La
+    idempotencia por event_id es obligatoria.
