@@ -1,28 +1,36 @@
 /**
- * Procesamiento de eventos del webhook de Zernio.
+ * Procesamiento de eventos del webhook de Zernio (contrato REAL).
  *
  * Orden obligatorio (regla dura de la guía):
  *   1. reclamar el evento por id (INSERT ... ON CONFLICT DO NOTHING RETURNING)
+ *      — el id es `payload.id`, que coincide con el header X-Zernio-Event-Id
  *   2. si no insertó -> es reintento -> no procesar
- *   3. rutear por account_id contra channel_accounts
+ *   3. rutear por account.id contra channel_accounts
  *   4. resolver contacto por contact_identities, upsert de conversación, insert de mensaje
  *
  * La entrega es at-least-once: el reclamo por event_id es lo que hace que dos
  * reintentos simultáneos no contesten dos veces.
+ *
+ * Mapa de eventos reales -> acciones:
+ *   message.received            -> mensaje entrante + dispara agente (en after())
+ *   message.sent                -> eco de saliente (propio o del panel): persiste
+ *   message.edited/deleted      -> actualiza/borra el cuerpo por external_id
+ *   message.delivered/read/played/failed -> status del mensaje
+ *   conversation.started        -> resuelve contacto (no crea hilo vacío)
+ *   conversation.control_changed-> handover: enciende/apaga el agente del hilo
+ *   account.connected/disconnected -> estado de channel_accounts
  */
 
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db";
-import {
-  channelAccounts,
-  contactIdentities,
-  contacts,
-  conversations,
-  messages,
-  webhookEvents,
-} from "@/db/schema";
+import { channelAccounts, contactIdentities, contacts, conversations, messages, webhookEvents } from "@/db/schema";
 import { parseWebhookEvent } from "@/lib/zernio/types";
-import type { Channel, WebhookEvent, WebhookEventParsed } from "@/lib/zernio/types";
+import type {
+  Channel,
+  WebhookEvent,
+  WebhookEventParsed,
+} from "@/lib/zernio/types";
+import { deliveryEventToStatus, platformToChannel } from "@/lib/zernio/types";
 
 export interface ProcessOutcome {
   action: "processed" | "duplicate" | "ignored" | "unrouted" | "invalid";
@@ -38,21 +46,23 @@ export interface ProcessOutcome {
  * Intenta insertar el evento. Devuelve true si SOMOS el procesador (insertó),
  * false si ya existía (reintento de otro request).
  */
-export async function claimEvent(
-  db: Database,
-  event: WebhookEventParsed,
-): Promise<boolean> {
+export async function claimEvent(db: Database, event: WebhookEventParsed): Promise<boolean> {
   const inserted = await db
     .insert(webhookEvents)
     .values({
       eventId: event.id,
-      eventType: event.type,
-      accountId: event.account_id ?? null,
+      eventType: event.event,
+      accountId: accountExternalId(event),
       payload: event as unknown as Record<string, unknown>,
     })
     .onConflictDoNothing()
     .returning({ eventId: webhookEvents.eventId });
   return inserted.length > 0;
+}
+
+/** id externo de la cuenta en CUALQUIER evento (bloque account). */
+function accountExternalId(event: WebhookEvent): string | null {
+  return event.account?.accountId ?? event.account?.id ?? null;
 }
 
 async function markEvent(
@@ -138,19 +148,33 @@ async function processClaimedEvent(
 }
 
 async function routeAndPersist(db: Database, event: WebhookEventParsed): Promise<ProcessOutcome> {
-  switch (event.type) {
-    case "incoming_message":
+  switch (event.event) {
+    case "message.received":
       return handleIncomingMessage(db, event);
-    case "message_status":
-      return handleMessageStatus(db, event);
-    case "account_connected":
-    case "account_disconnected":
+    case "message.sent":
+      return handleOutgoingMessage(db, event);
+    case "message.edited":
+      return handleEditedMessage(db, event);
+    case "message.deleted":
+      return handleDeletedMessage(db, event);
+    case "message.delivered":
+    case "message.read":
+    case "message.played":
+    case "message.failed":
+      return handleDeliveryStatus(db, event);
+    case "conversation.started":
+      return handleConversationStarted(db, event);
+    case "conversation.control_changed":
+      return handleControlChanged(db, event);
+    case "account.connected":
+    case "account.disconnected":
       return handleAccountEvent(db, event);
     default:
       // Evento desconocido: loguear y marcar como procesado. Nunca 500: a los
       // diez fallos seguidos el proveedor apaga la suscripción.
-      console.warn(`[webhook] evento desconocido: ${event.type} (${event.id})`);
-      return { action: "ignored", detail: `tipo desconocido: ${event.type}` };
+      const unknown = event as { event: string; id: string };
+      console.warn(`[webhook] evento desconocido: ${unknown.event} (${unknown.id})`);
+      return { action: "ignored", detail: `tipo desconocido: ${unknown.event}` };
   }
 }
 
@@ -158,43 +182,47 @@ async function routeAndPersist(db: Database, event: WebhookEventParsed): Promise
 
 async function handleIncomingMessage(
   db: Database,
-  event: WebhookEventParsed,
+  event: Extract<WebhookEventParsed, { event: "message.received" }>,
 ): Promise<ProcessOutcome> {
   const message = event.message;
-  const conversationExternalId = event.conversation_id;
-  if (!message || !event.account_id || !conversationExternalId) {
-    return { action: "ignored", detail: "evento incompleto (message/account_id/conversation_id)" };
+  // Clave de la conversación: platformConversationId (el id que también
+  // devuelve GET /v1/inbox/conversations; conversation.id es el interno).
+  const conversationExternalId = event.conversation.platformConversationId;
+  const accountId = event.account.accountId ?? event.account.id;
+  if (!message || !accountId || !conversationExternalId) {
+    return { action: "ignored", detail: "evento incompleto (message/account/conversation)" };
   }
 
   // 3. Ruteo por cuenta: sin match, ignorar (el evento queda marcado).
   const account = await db
     .select()
     .from(channelAccounts)
-    .where(eq(channelAccounts.externalId, event.account_id))
+    .where(eq(channelAccounts.externalId, accountId))
     .limit(1);
   if (account.length === 0) {
-    console.warn(`[webhook] evento ${event.id}: cuenta ${event.account_id} no está conectada`);
-    return { action: "unrouted", detail: `cuenta ${event.account_id} desconocida` };
+    console.warn(`[webhook] evento ${event.id}: cuenta ${accountId} no está conectada`);
+    return { action: "unrouted", detail: `cuenta ${accountId} desconocida` };
   }
-  const channel = account[0].channel as Channel;
+  // El canal lo dice la CUENTA (platform), no el mensaje: es la fuente estable.
+  const channel = platformToChannel(account[0].channel) ?? platformToChannel(event.account.platform);
+  if (!channel) {
+    return { action: "ignored", detail: `canal no soportado: ${event.account.platform}` };
+  }
 
   // 4a. Contacto por identidad (la identidad NO es el teléfono).
-  const contactId = await resolveContact(db, channel, message);
+  const contactId = await resolveContact(db, channel, event);
 
   // 4b. Conversación: única por (provider, external_id).
-  // El contacto resuelto se guarda en metadata: no es una cola de la
-  // conversación (la unidad es el hilo), pero permite enlazar los hilos de
-  // una misma persona entre canales.
   const conversationId = await upsertConversation(db, {
     channel,
     provider: "zernio",
     externalId: conversationExternalId,
-    accountId: event.account_id,
-    participantId: message.from.id,
-    name: message.from.name ?? null,
-    handle: channel === "whatsapp" ? (message.from.phone ?? null) : (message.from.username ?? null),
-    picture: message.from.picture ?? null,
-    referral: event.referral,
+    accountId,
+    participantId: event.conversation.participantId ?? message.sender.id,
+    name: event.conversation.participantName ?? message.sender.name ?? null,
+    handle: handleForChannel(channel, message.sender),
+    picture: event.conversation.participantPicture ?? message.sender.picture ?? null,
+    referral: event.metadata?.referral,
     contactId,
   });
 
@@ -208,11 +236,11 @@ async function handleIncomingMessage(
       provider: "zernio",
       externalId: message.id,
       direction: "inbound",
-      type: message.type,
+      type: messageTypeFromEvent(message),
       body: message.text ?? null,
       status: "delivered",
       rawPayload: event as unknown as Record<string, unknown>,
-      sentAt: new Date(message.timestamp),
+      sentAt: new Date(message.sentAt),
     })
     .onConflictDoNothing();
 
@@ -220,7 +248,7 @@ async function handleIncomingMessage(
   await db
     .update(conversations)
     .set({
-      lastMessageAt: new Date(message.timestamp),
+      lastMessageAt: new Date(message.sentAt),
       lastInboundAt: new Date(),
       unreadCount: sql`${conversations.unreadCount} + 1`,
       updatedAt: new Date(),
@@ -230,14 +258,287 @@ async function handleIncomingMessage(
   return { action: "processed", conversationId };
 }
 
+/** Tipo de mensaje según los attachments que manda el proveedor. */
+function messageTypeFromEvent(message: {
+  text?: string | null;
+  attachments: Array<{ type: string }>;
+}): "text" | "image" | "audio" | "video" | "document" | "sticker" | "location" | "reaction" | "other" {
+  if (message.text) return "text";
+  const type = message.attachments[0]?.type ?? "";
+  switch (type) {
+    case "image":
+      return "image";
+    case "audio":
+      return "audio";
+    case "video":
+      return "video";
+    case "file":
+      return "document";
+    case "sticker":
+      return "sticker";
+    case "location":
+      return "location";
+    case "reaction":
+      return "reaction";
+    default:
+      return "other";
+  }
+}
+
+/** Handle mostrado por canal: en WhatsApp el teléfono; en el resto, el usuario. */
+function handleForChannel(
+  channel: Channel,
+  sender: { username?: string; phoneNumber?: string | null; businessScopedUserId?: string },
+): string | null {
+  if (channel === "whatsapp") return sender.phoneNumber ?? sender.businessScopedUserId ?? null;
+  return sender.username ?? null;
+}
+
+/* ---------------- mensaje saliente (eco) ---------------- */
+
+async function handleOutgoingMessage(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "message.sent" }>,
+): Promise<ProcessOutcome> {
+  const accountId = event.account.accountId ?? event.account.id;
+  const conversationExternalId = event.conversation.platformConversationId;
+
+  const existing = await db
+    .select({ id: conversations.id, channel: conversations.channel })
+    .from(conversations)
+    .where(and(eq(conversations.provider, "zernio"), eq(conversations.externalId, conversationExternalId)))
+    .limit(1);
+
+  if (existing.length > 0) {
+    // Eco de un saliente nuestro (o enviado desde el panel): el ON CONFLICT
+    // sobre external_id evita el duplicado con lo que persistió
+    // deliverMessage.
+    await insertOutbound(db, existing[0].id, existing[0].channel as Channel, event);
+    return { action: "processed", conversationId: existing[0].id };
+  }
+
+  // Un saliente de un hilo que nunca entró por webhook (abierto desde el
+  // panel del proveedor): se registra la conversación sin tocar unread.
+  const channel = await resolveChannelForAccount(db, accountId);
+  if (!channel) return { action: "ignored", detail: "cuenta o canal desconocido" };
+  const conversationId = await upsertConversation(db, {
+    channel,
+    provider: "zernio",
+    externalId: conversationExternalId,
+    accountId,
+    participantId: event.conversation.participantId ?? null,
+    name: event.conversation.participantName ?? null,
+    handle: event.conversation.participantUsername ?? null,
+    picture: event.conversation.participantPicture ?? null,
+    referral: event.metadata?.referral,
+  });
+  await insertOutbound(db, conversationId, channel, event);
+  return { action: "processed", conversationId };
+}
+
+async function resolveChannelForAccount(db: Database, accountId: string): Promise<Channel | null> {
+  const account = await db
+    .select({ channel: channelAccounts.channel })
+    .from(channelAccounts)
+    .where(eq(channelAccounts.externalId, accountId))
+    .limit(1);
+  return platformToChannel(account[0]?.channel ?? "");
+}
+
+async function insertOutbound(
+  db: Database,
+  conversationId: string,
+  channel: Channel,
+  event: Extract<WebhookEventParsed, { event: "message.sent" }>,
+): Promise<void> {
+  await db
+    .insert(messages)
+    .values({
+      conversationId,
+      channel,
+      provider: "zernio",
+      // Mismo external_id que persistió deliverMessage: el ON CONFLICT evita
+      // el duplicado del eco.
+      externalId: event.message.id,
+      direction: "outbound",
+      type: messageTypeFromEvent(event.message),
+      body: event.message.text ?? null,
+      status: "sent",
+      rawPayload: event as unknown as Record<string, unknown>,
+      sentAt: new Date(event.message.sentAt),
+    })
+    .onConflictDoNothing();
+  await db
+    .update(conversations)
+    .set({ lastMessageAt: new Date(event.message.sentAt), updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId));
+}
+
+/* ---------------- mensaje editado / borrado ---------------- */
+
+async function handleEditedMessage(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "message.edited" }>,
+): Promise<ProcessOutcome> {
+  const updated = await db
+    .update(messages)
+    .set({ body: event.message.text ?? null })
+    .where(eq(messages.externalId, event.message.id))
+    .returning({ id: messages.id });
+  if (updated.length === 0) {
+    console.warn(`[webhook] edición para mensaje desconocido ${event.message.id}`);
+  }
+  return { action: "processed", detail: `editado ${event.message.id}` };
+}
+
+async function handleDeletedMessage(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "message.deleted" }>,
+): Promise<ProcessOutcome> {
+  const updated = await db
+    .update(messages)
+    .set({ body: null })
+    .where(eq(messages.externalId, event.message.id))
+    .returning({ id: messages.id });
+  if (updated.length === 0) {
+    console.warn(`[webhook] borrado para mensaje desconocido ${event.message.id}`);
+  }
+  return { action: "processed", detail: `borrado ${event.message.id}` };
+}
+
+/* ---------------- eventos de estado ---------------- */
+
+async function handleDeliveryStatus(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "message.delivered" | "message.read" | "message.played" | "message.failed" }>,
+): Promise<ProcessOutcome> {
+  const status = deliveryEventToStatus(event.event);
+  const updated = await db
+    .update(messages)
+    .set({ status })
+    .where(eq(messages.externalId, event.message.id))
+    .returning({ id: messages.id });
+  if (updated.length === 0) {
+    // Puede llegar el estado antes que el mensaje (raro pero posible).
+    console.warn(`[webhook] estado para mensaje desconocido ${event.message.id}`);
+  }
+  return { action: "processed", detail: `status ${status}` };
+}
+
+/* ---------------- ciclo de vida de la conversación ---------------- */
+
+async function handleConversationStarted(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "conversation.started" }>,
+): Promise<ProcessOutcome> {
+  // No se crea el hilo acá: los hilos vacíos ensucian la bandeja. El hilo se
+  // crea con el primer mensaje. Sí se resuelve el contacto si viene el id.
+  const channel = platformToChannel(event.conversation.platform);
+  if (channel && event.conversation.participantId) {
+    const existing = await db
+      .select()
+      .from(contactIdentities)
+      .where(
+        and(
+          eq(contactIdentities.channel, channel),
+          eq(contactIdentities.externalId, event.conversation.participantId),
+        ),
+      )
+      .limit(1);
+    if (existing.length === 0) {
+      const [contact] = await db
+        .insert(contacts)
+        .values({
+          name: event.conversation.participantName ?? null,
+        })
+        .returning();
+      await db
+        .insert(contactIdentities)
+        .values({
+          contactId: contact.id,
+          channel,
+          externalId: event.conversation.participantId,
+          handle: event.conversation.participantUsername ?? null,
+        })
+        .onConflictDoNothing();
+    }
+  }
+  return { action: "processed", detail: `conversación iniciada ${event.conversation.id}` };
+}
+
+async function handleControlChanged(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "conversation.control_changed" }>,
+): Promise<ProcessOutcome> {
+  // Handover de Meta Business Agent: si el hilo pasa a 'app' u 'other', un
+  // humano lo tomó -> el agente se apaga en ESE hilo (no en todo el canal).
+  const owner = event.control?.owner ?? "other";
+  const aiEnabled = owner === "ai_agent";
+  const updated = await db
+    .update(conversations)
+    .set({ aiEnabled, updatedAt: new Date() })
+    .where(
+      and(eq(conversations.provider, "zernio"), eq(conversations.externalId, event.conversation.id)),
+    )
+    .returning({ id: conversations.id });
+  if (updated.length === 0) {
+    // El hilo puede no existir todavía (control antes del primer mensaje).
+    return { action: "ignored", detail: `hilo ${event.conversation.id} sin registro local` };
+  }
+  return { action: "processed", detail: `control -> ${owner} (agente ${aiEnabled ? "activo" : "pausado"})` };
+}
+
+/* ---------------- eventos de cuenta ---------------- */
+
+async function handleAccountEvent(
+  db: Database,
+  event: Extract<WebhookEventParsed, { event: "account.connected" | "account.disconnected" }>,
+): Promise<ProcessOutcome> {
+  const accountId = event.account.accountId ?? event.account.id;
+  const status = event.event === "account.connected" ? "connected" : "disconnected";
+
+  const existing = await db
+    .select({ id: channelAccounts.id })
+    .from(channelAccounts)
+    .where(eq(channelAccounts.externalId, accountId))
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db
+      .update(channelAccounts)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(channelAccounts.id, existing[0].id));
+  } else if (status === "connected") {
+    // Cuenta nueva: se registra SOLO si el canal es uno de los atendidos.
+    const channel = platformToChannel(event.account.platform);
+    if (channel) {
+      await db
+        .insert(channelAccounts)
+        .values({
+          provider: "zernio",
+          channel,
+          externalId: accountId,
+          name: event.account.displayName ?? event.account.username ?? null,
+          status,
+        })
+        .onConflictDoNothing();
+    }
+  }
+  return { action: "processed", detail: `cuenta ${accountId} ${status}` };
+}
+
+/* ---------------- contacto ---------------- */
+
 async function resolveContact(
   db: Database,
   channel: Channel,
-  message: WebhookEventParsed["message"],
+  event: Extract<WebhookEventParsed, { event: "message.received" }>,
 ): Promise<string> {
-  if (!message) throw new Error("mensaje inexistente al resolver contacto");
-  const externalId = message.from.id;
-  const handle = channel === "whatsapp" ? (message.from.phone ?? null) : (message.from.username ?? null);
+  const sender = event.message.sender;
+  // Identidad estable: para WhatsApp, phoneNumber si existe (si no, BSUID);
+  // para el resto, el id de plataforma.
+  const externalId = sender.id;
+  const handle = handleForChannel(channel, sender);
 
   const existing = await db
     .select()
@@ -249,8 +550,8 @@ async function resolveContact(
   const [contact] = await db
     .insert(contacts)
     .values({
-      name: message.from.name ?? handle ?? null,
-      picture: message.from.picture ?? null,
+      name: event.conversation.participantName ?? sender.name ?? handle ?? null,
+      picture: event.conversation.participantPicture ?? sender.picture ?? null,
     })
     .returning();
 
@@ -267,11 +568,11 @@ interface UpsertConversationInput {
   provider: string;
   externalId: string;
   accountId: string;
-  participantId: string;
+  participantId: string | null;
   name: string | null;
   handle: string | null;
   picture: string | null;
-  referral?: WebhookEventParsed["referral"];
+  referral?: unknown;
   contactId?: string;
 }
 
@@ -344,64 +645,6 @@ async function upsertConversation(db: Database, input: UpsertConversationInput):
   }
 }
 
-/* ---------------- eventos de estado ---------------- */
-
-async function handleMessageStatus(
-  db: Database,
-  event: WebhookEventParsed,
-): Promise<ProcessOutcome> {
-  if (!event.message || !event.status) {
-    return { action: "ignored", detail: "evento de estado incompleto" };
-  }
-  const updated = await db
-    .update(messages)
-    .set({ status: event.status })
-    .where(eq(messages.externalId, event.message.id))
-    .returning({ id: messages.id });
-  if (updated.length === 0) {
-    // Puede llegar el estado antes que el mensaje (raro pero posible).
-    console.warn(`[webhook] estado para mensaje desconocido ${event.message.id}`);
-  }
-  return { action: "processed", detail: `status ${event.status}` };
-}
-
-/* ---------------- eventos de cuenta ---------------- */
-
-async function handleAccountEvent(
-  db: Database,
-  event: WebhookEventParsed,
-): Promise<ProcessOutcome> {
-  const account = event.account;
-  const accountId = account?.id ?? event.account_id;
-  if (!accountId) return { action: "ignored", detail: "evento de cuenta sin id" };
-  const status = event.type === "account_connected" ? "connected" : "disconnected";
-
-  const existing = await db
-    .select({ id: channelAccounts.id })
-    .from(channelAccounts)
-    .where(eq(channelAccounts.externalId, accountId))
-    .limit(1);
-
-  if (existing.length > 0) {
-    await db
-      .update(channelAccounts)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(channelAccounts.id, existing[0].id));
-  } else if (account) {
-    await db
-      .insert(channelAccounts)
-      .values({
-        provider: "zernio",
-        channel: account.channel,
-        externalId: account.id,
-        name: account.name ?? null,
-        status,
-      })
-      .onConflictDoNothing();
-  }
-  return { action: "processed", detail: `cuenta ${accountId} ${status}` };
-}
-
 /* ------------------------------------------------------------------ */
 /* Red de seguridad: eventos reclamados pero sin procesar              */
 /* ------------------------------------------------------------------ */
@@ -441,7 +684,7 @@ export async function reprocessUnprocessedEvents(db: Database, limit = 20): Prom
       .from(webhookEvents)
       .where(eq(webhookEvents.eventId, row.eventId))
       .limit(1);
-    const payload = full[0]?.payload as unknown as WebhookEvent | undefined;
+    const payload = full[0]?.payload as unknown;
     if (!payload) continue;
     // Re-validar: el payload viene de la base, no del proveedor.
     const parsed = parseWebhookEvent(payload);

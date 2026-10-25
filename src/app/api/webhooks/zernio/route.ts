@@ -2,7 +2,8 @@
  * POST /api/webhooks/zernio — recepción de eventos del proveedor.
  *
  * Orden EXACTO (regla dura):
- *   1. body CRUDO + verificación de firma HMAC. Sin firma válida: 401.
+ *   1. body CRUDO + verificación de firma HMAC (header X-Zernio-Signature).
+ *      Sin firma válida: 401.
  *   2. Reclamo del evento por id (ON CONFLICT DO NOTHING). Reintento: 200 y cortar.
  *   3. Ruteo por cuenta, resolución de contacto, persistencia.
  *   4. El trabajo del agente va DESPUÉS de responder, dentro de after(),
@@ -24,8 +25,10 @@ import { parseWebhookEvent } from "@/lib/zernio/types";
 export async function POST(request: Request): Promise<NextResponse> {
   // 1. Body CRUDO: la firma se calcula sobre los bytes tal cual llegaron.
   const rawBody = await request.text();
-  const signature =
-    request.headers.get("x-zernio-signature") ?? request.headers.get("x-hub-signature-256");
+  const signature = request.headers.get("x-zernio-signature");
+  // Id estable del evento: header canónico, idéntico al del body.
+  const headerEventId = request.headers.get("x-zernio-event-id");
+  const headerEvent = request.headers.get("x-zernio-event");
   const secret = process.env.ZERNIO_WEBHOOK_SECRET;
 
   const verification = verifyWebhookSignature(rawBody, signature, secret);
@@ -43,10 +46,20 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   const event = parseWebhookEvent(payload);
   if (!event) {
-    // Payivo que no matchea el contrato: log ALTO. La trampa #1 es que estos
+    // Payload que no matchea el contrato: log ALTO. La trampa #1 es que estos
     // se descartan en silencio.
     console.error("[webhook] payload no matchea el contrato de Zernio:", rawBody.slice(0, 500));
     return NextResponse.json({ error: "payload inválido" }, { status: 400 });
+  }
+  if (headerEventId && headerEventId !== event.id) {
+    // No debería pasar (el proveedor manda el mismo id en ambos lados), pero
+    // si pasa, el header es el canónico para deduplicar.
+    console.warn(
+      `[webhook] X-Zernio-Event-Id (${headerEventId}) != payload.id (${event.id}); se usa el del body`,
+    );
+  }
+  if (headerEvent && headerEvent !== event.event) {
+    console.warn(`[webhook] X-Zernio-Event (${headerEvent}) != payload.event (${event.event})`);
   }
 
   // 2-4. Reclamo + ruteo + persistencia. Todo inline: es un INSERT, entra en

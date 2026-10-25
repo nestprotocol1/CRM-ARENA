@@ -83,11 +83,12 @@ export async function deliverMessage(
   }
 
   // --- Envío por el proveedor ---
+  // El body REAL de Zernio pide accountId; la respuesta envuelve en data.
   const sent = await sendProviderMessage(conversation.externalId, {
-    type,
-    text: input.text ?? null,
-    template_name: input.templateName ?? null,
-    human_agent_tag: humanAgentTag,
+    accountId: conversation.accountId,
+    ...(type === "template"
+      ? { template: { name: input.templateName as string } }
+      : { message: input.text ?? "" }),
   });
   if (!sent.success) {
     // Persistir el fallo SÍ: el historial tiene que mostrar que no salió.
@@ -102,17 +103,25 @@ export async function deliverMessage(
     return { success: false, error: `no se pudo enviar: ${sent.error}` };
   }
 
+  const externalId = sent.data.data?.messageId ?? null;
+  const status: MessageStatus = externalId ? "sent" : "failed";
+
   // --- Persistencia ---
   await persistOutbound(db, {
     conversation,
-    externalId: sent.data.id,
+    externalId,
     type,
     body: input.text ?? (input.templateName ? `[plantilla: ${input.templateName}]` : null),
-    status: sent.data.status,
-    rawPayload: { author: input.author ?? "human", human_agent_tag: humanAgentTag },
+    status,
+    rawPayload: {
+      author: input.author ?? "human",
+      human_agent_tag: humanAgentTag,
+      provider_message_id: externalId,
+      warnings: sent.data.warnings ?? [],
+    },
   });
 
-  return { success: true, messageId: sent.data.id, status: sent.data.status };
+  return { success: true, messageId: externalId ?? "", status };
 }
 
 async function persistOutbound(

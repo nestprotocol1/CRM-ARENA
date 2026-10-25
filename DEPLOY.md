@@ -11,7 +11,7 @@
    | --- | --- |
    | `DATABASE_URL` | connection string de Supabase (pooler, puerto 6543) |
    | `ZERNIO_API_KEY` | key del proveedor |
-   | `ZERNIO_BASE_URL` | `https://api.zernio.com` |
+   | `ZERNIO_BASE_URL` | `https://zernio.com/api` (base real; el default del código ya es esta) |
    | `ZERNIO_WEBHOOK_SECRET` | secreto para la firma HMAC |
    | `OPENROUTER_API_KEY` | key de OpenRouter |
    | `BACKFILL_TOKEN` | token del barrido (Bearer o `X-Backfill-Token`) |

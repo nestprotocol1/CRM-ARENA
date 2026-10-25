@@ -32,8 +32,8 @@ export interface DemoConversation {
   participantId: string;
   name: string;
   handle: string;
-  /** Atribución de anuncio, si el proveedor la manda. */
-  referral?: { source: "ad" | "post" | "direct" | "other"; campaign_id: string; adset_id: string; ad_id: string };
+  /** Atribución de anuncio, si el proveedor la manda (shape real: camelCase). */
+  referral?: { source?: string; campaignId?: string; adsetId?: string; adId?: string };
   /** Un vendedor tomó este hilo a mano: el agente no contesta. */
   aiDisabled?: boolean;
   /** Para probar la ventana de 24h fuera de horario. */
@@ -49,7 +49,7 @@ export const DEMO_CONVERSATIONS: DemoConversation[] = [
     participantId: "wa_573001112233",
     name: "María Fernández",
     handle: "+57 300 111 2233",
-    referral: { source: "ad", campaign_id: "cmp_llantas_2026", adset_id: "aset_ruedas", ad_id: "ad_205_55" },
+    referral: { source: "ad", campaignId: "cmp_llantas_2026", adsetId: "aset_ruedas", adId: "ad_205_55" },
     messages: [
       { id: "conv_wa_1001_m0", inbound: true, text: "Hola, vi el anuncio de las llantas. ¿Tienen 205/55 R16?", minutesAgo: 46 },
       { id: "conv_wa_1001_m1", inbound: false, text: "¡Hola María! Sí, tenemos esa medida. ¿Para qué vehículo?", minutesAgo: 44 },

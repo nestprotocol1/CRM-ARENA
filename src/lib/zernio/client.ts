@@ -99,9 +99,12 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
-/** Construye el cliente desde el entorno. Mock mode se resuelve en index.ts. */
+/**
+ * Construye el cliente desde el entorno. Mock mode se resuelve en index.ts.
+ * Base REAL de Zernio: https://zernio.com/api (los recursos van con /v1/...).
+ */
 export function clientFromEnv(): ZernioClient {
-  const baseUrl = process.env.ZERNIO_BASE_URL ?? "https://api.zernio.com";
+  const baseUrl = process.env.ZERNIO_BASE_URL ?? "https://zernio.com/api";
   const apiKey = process.env.ZERNIO_API_KEY ?? "";
   return new ZernioClient({ baseUrl, apiKey });
 }

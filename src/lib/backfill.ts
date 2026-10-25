@@ -7,19 +7,18 @@
  *
  * El historial que el proveedor ya replicó NO llega por webhook: se importa
  * por la API REST (mismos dos endpoints que la bandeja).
+ *
+ * Formas REALES: la lista de conversaciones trae participantName /
+ * participantId / lastMessage / updatedTime; los mensajes traen message /
+ * direction ('incoming'|'outgoing') / createdAt.
  */
 
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import {
-  channelAccounts,
-  contactIdentities,
-  contacts,
-  conversations,
-  messages,
-} from "@/db/schema";
+import { channelAccounts, contactIdentities, contacts, conversations, messages } from "@/db/schema";
 import { listProviderAccounts, iterateProviderConversations, listProviderMessages } from "@/lib/zernio";
-import type { Channel } from "@/lib/zernio/types";
+import type { RestConversation, RestMessage } from "@/lib/zernio/types";
+import { platformToChannel } from "@/lib/zernio/types";
 
 export interface BackfillResult {
   accounts: number;
@@ -69,8 +68,8 @@ export async function runBackfill(options: { maxConversations?: number } = {}): 
       if (options.maxConversations && count >= options.maxConversations) break;
       count += 1;
       try {
-        result.conversations += await importConversation(db, conversation, account.channel);
-        result.messages += await importMessages(db, conversation.id);
+        result.conversations += await importConversation(db, conversation);
+        result.messages += await importMessages(db, conversation.id ?? "");
       } catch (error) {
         result.errors.push(
           `${conversation.id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -84,36 +83,27 @@ export async function runBackfill(options: { maxConversations?: number } = {}): 
 
 async function importConversation(
   db: Awaited<ReturnType<typeof getDb>>,
-  providerConversation: {
-    id: string;
-    channel: Channel;
-    account_id: string;
-    participant: { id: string; name?: string | null; handle?: string | null; picture?: string | null };
-    last_message_at?: string | null;
-    unread_count: number;
-  },
-  channel: Channel,
+  providerConversation: RestConversation,
 ): Promise<number> {
+  const channel = platformToChannel(providerConversation.platform);
+  const externalId = providerConversation.id;
+  const participantId = providerConversation.participantId ?? null;
+  if (!channel || !externalId) return 0;
+
   const existing = await db
     .select({ id: conversations.id })
     .from(conversations)
-    .where(
-      and(
-        eq(conversations.provider, "zernio"),
-        eq(conversations.externalId, providerConversation.id),
-      ),
-    )
+    .where(and(eq(conversations.provider, "zernio"), eq(conversations.externalId, externalId)))
     .limit(1);
 
   if (existing.length > 0) {
     await db
       .update(conversations)
       .set({
-        accountId: providerConversation.account_id,
-        participantId: providerConversation.participant.id,
-        name: providerConversation.participant.name ?? null,
-        handle: providerConversation.participant.handle ?? null,
-        picture: providerConversation.participant.picture ?? null,
+        accountId: providerConversation.accountId ?? undefined,
+        participantId,
+        name: providerConversation.participantName ?? null,
+        picture: providerConversation.participantPicture ?? null,
         updatedAt: new Date(),
       })
       .where(eq(conversations.id, existing[0].id));
@@ -121,47 +111,40 @@ async function importConversation(
   }
 
   // Contacto por identidad (la identidad NO es el teléfono).
-  const identity = await db
-    .select({ contactId: contactIdentities.contactId })
-    .from(contactIdentities)
-    .where(
-      and(
-        eq(contactIdentities.channel, channel),
-        eq(contactIdentities.externalId, providerConversation.participant.id),
-      ),
-    )
-    .limit(1);
-  let contactId = identity[0]?.contactId;
-  if (!contactId) {
-    const [contact] = await db
-      .insert(contacts)
-      .values({ name: providerConversation.participant.name ?? null })
-      .returning();
-    contactId = contact.id;
-    await db
-      .insert(contactIdentities)
-      .values({
-        contactId,
-        channel,
-        externalId: providerConversation.participant.id,
-        handle: providerConversation.participant.handle ?? null,
-      })
-      .onConflictDoNothing();
+  let contactId: string | undefined;
+  if (participantId) {
+    const identity = await db
+      .select({ contactId: contactIdentities.contactId })
+      .from(contactIdentities)
+      .where(
+        and(eq(contactIdentities.channel, channel), eq(contactIdentities.externalId, participantId)),
+      )
+      .limit(1);
+    contactId = identity[0]?.contactId;
+    if (!contactId) {
+      const [contact] = await db
+        .insert(contacts)
+        .values({ name: providerConversation.participantName ?? null })
+        .returning();
+      contactId = contact.id;
+      await db
+        .insert(contactIdentities)
+        .values({ contactId, channel, externalId: participantId, handle: participantId })
+        .onConflictDoNothing();
+    }
   }
 
   await db.insert(conversations).values({
     channel,
     provider: "zernio",
-    externalId: providerConversation.id,
-    accountId: providerConversation.account_id,
-    participantId: providerConversation.participant.id,
-    name: providerConversation.participant.name ?? null,
-    handle: providerConversation.participant.handle ?? null,
-    picture: providerConversation.participant.picture ?? null,
-    lastMessageAt: providerConversation.last_message_at
-      ? new Date(providerConversation.last_message_at)
-      : null,
-    metadata: { contact_id: contactId, imported: true },
+    externalId,
+    accountId: providerConversation.accountId ?? "",
+    participantId,
+    name: providerConversation.participantName ?? null,
+    handle: participantId,
+    picture: providerConversation.participantPicture ?? null,
+    lastMessageAt: providerConversation.updatedTime ? new Date(providerConversation.updatedTime) : null,
+    metadata: { ...(contactId ? { contact_id: contactId } : {}), imported: true },
   });
   return 1;
 }
@@ -186,26 +169,62 @@ async function importMessages(
   if (!page.success) return 0;
 
   let imported = 0;
-  for (const message of page.data.data) {
-    const inserted = await db
-      .insert(messages)
-      .values({
-        conversationId: conversation.id,
-        channel: conversation.channel,
-        provider: conversation.provider,
-        externalId: message.id,
-        direction: message.direction,
-        type: message.type,
-        body: message.text ?? null,
-        status: message.status,
-        sentAt: new Date(message.sent_at),
-        rawPayload: { imported: true },
-      })
-      .onConflictDoNothing()
-      .returning({ id: messages.id });
-    if (inserted.length > 0) imported += 1;
+  for (const message of page.data.messages ?? []) {
+    const inserted = await insertBackfillMessage(db, conversation, message);
+    if (inserted) imported += 1;
   }
   return imported;
+}
+
+async function insertBackfillMessage(
+  db: Awaited<ReturnType<typeof getDb>>,
+  conversation: { id: string; channel: string; provider: string },
+  message: RestMessage,
+): Promise<boolean> {
+  if (!message.id) return false;
+  const inserted = await db
+    .insert(messages)
+    .values({
+      conversationId: conversation.id,
+      channel: conversation.channel as "whatsapp" | "instagram" | "facebook",
+      provider: conversation.provider,
+      externalId: message.id,
+      // El proveedor dice incoming/outgoing; nuestra columna dice inbound/outbound.
+      direction: message.direction === "incoming" ? "inbound" : "outbound",
+      type: messageTypeFromAttachments(message),
+      body: message.message ?? null,
+      status: message.direction === "incoming" ? "delivered" : "sent",
+      sentAt: message.createdAt ? new Date(message.createdAt) : new Date(),
+      rawPayload: { imported: true },
+    })
+    .onConflictDoNothing()
+    .returning({ id: messages.id });
+  return inserted.length > 0;
+}
+
+function messageTypeFromAttachments(
+  message: RestMessage,
+): "text" | "template" | "image" | "audio" | "video" | "document" | "sticker" | "location" | "reaction" | "other" {
+  if (message.message) return "text";
+  const type = message.attachments?.[0]?.type ?? "";
+  switch (type) {
+    case "image":
+      return "image";
+    case "audio":
+      return "audio";
+    case "video":
+      return "video";
+    case "file":
+      return "document";
+    case "sticker":
+      return "sticker";
+    case "location":
+      return "location";
+    case "reaction":
+      return "reaction";
+    default:
+      return "other";
+  }
 }
 
 /** Cuenta conversaciones importadas (para el log del barrido). */

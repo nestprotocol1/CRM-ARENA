@@ -34,8 +34,9 @@ async function main() {
     console.log(`Proveedor: ${providerName()}`);
     console.log(`Cuentas (${result.data.length}):`);
     for (const account of result.data) {
+      const label = account.displayName ?? account.username ?? account.id;
       console.log(
-        `  ${account.channel.padEnd(9)} ${account.id.padEnd(20)} ${account.name ?? "-"} [${account.status}]`,
+        `  ${account.platform.padEnd(9)} ${account.id.padEnd(20)} ${label} [${account.isActive ? "activa" : "inactiva"}]`,
       );
     }
     return;
@@ -54,9 +55,9 @@ async function main() {
       channel: channel as "whatsapp" | "instagram" | "facebook" | undefined,
     })) {
       total += 1;
-      const who = conversation.participant.handle ?? conversation.participant.name ?? conversation.participant.id;
+      const who = conversation.participantName ?? conversation.participantId ?? "-";
       console.log(
-        `  ${conversation.channel.padEnd(9)} ${conversation.id.padEnd(16)} ${String(who).padEnd(24)} no leídos: ${conversation.unread_count}`,
+        `  ${(conversation.platform ?? "-").padEnd(9)} ${conversation.id.padEnd(16)} ${String(who).padEnd(24)} no leídos: ${conversation.unreadCount ?? 0}`,
       );
     }
     console.log(`Total: ${total} conversaciones.`);

@@ -105,9 +105,10 @@ en silencio, que es mucho peor.
 DATABASE_URL=
 # Proveedor
 ZERNIO_API_KEY=
-ZERNIO_BASE_URL=https://api.zernio.com
+ZERNIO_BASE_URL=https://zernio.com/api   # base real; vacío = el default del código
 ZERNIO_WEBHOOK_SECRET=
 ZERNIO_MOCK=1            # 1 = adaptador mock local (sin red)
+ZERNIO_PROFILE_ID=       # opcional: perfil para /v1/connect/{platform} (si no, el primero)
 # Agente
 OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1

@@ -3,13 +3,17 @@
  *
  * Para qué sirve: probar el flujo completo (webhook -> base -> bandeja ->
  * agente) sin credenciales ni salida a internet. Se activa con ZERNIO_MOCK=1.
- * En producción (Vercel) va el cliente real contra api.zernio.com.
+ * En producción (Vercel) va el cliente real contra https://zernio.com/api.
+ *
+ * Las formas son las REALES (camelCase, message/conversation/account): el
+ * mock existe para no necesitar red, no para inventar un contrato.
  */
 
 import { DEMO_ACCOUNTS, DEMO_CONVERSATIONS } from "../demo-data";
 import { ok, type Result } from "./client";
 import type {
   Channel,
+  MessageReceivedEvent,
   OpenConversationRequest,
   PageOfMessages,
   RestAccount,
@@ -31,41 +35,54 @@ interface MockConversation extends RestConversation {
   messages: MockMessage[];
 }
 
+function iso(minutesAgo: number): string {
+  return new Date(Date.now() - minutesAgo * 60_000).toISOString();
+}
+
 /** Proyección a la forma REST (sin el array interno de mensajes). */
 function toRestConversation(c: MockConversation): RestConversation {
   return {
     id: c.id,
-    channel: c.channel,
-    account_id: c.account_id,
-    participant: c.participant,
-    last_message_at: c.last_message_at,
-    unread_count: c.unread_count,
+    platform: c.platform,
+    accountId: c.accountId,
+    participantId: c.participantId,
+    participantName: c.participantName,
+    participantPicture: c.participantPicture,
+    lastMessage: c.lastMessage,
+    updatedTime: c.updatedTime,
+    status: c.status,
+    unreadCount: c.unreadCount,
+    threadControl: c.threadControl,
   };
-}
-
-function iso(minutesAgo: number): string {
-  return new Date(Date.now() - minutesAgo * 60_000).toISOString();
 }
 
 function seedConversations(): MockConversation[] {
   return DEMO_CONVERSATIONS.map((c) => {
     const messages: MockMessage[] = c.messages.map((m) => ({
       id: m.id,
-      direction: m.inbound ? "inbound" : "outbound",
-      type: "text",
-      text: m.text,
-      status: m.inbound ? "delivered" : "read",
-      sent_at: iso(m.minutesAgo),
+      conversationId: c.id,
+      platform: c.channel,
+      message: m.text,
+      senderId: m.inbound ? c.participantId : "me",
+      senderName: m.inbound ? c.name : null,
+      direction: m.inbound ? "incoming" : "outgoing",
+      createdAt: iso(m.minutesAgo),
+      attachments: [],
     }));
     const lastInbound = [...c.messages].reverse().find((m) => m.inbound);
     const lastMessage = c.messages[c.messages.length - 1];
     return {
       id: c.id,
-      channel: c.channel,
-      account_id: c.accountId,
-      participant: { id: c.participantId, name: c.name, handle: c.handle, picture: null },
-      last_message_at: iso(lastMessage.minutesAgo),
-      unread_count: lastInbound && lastInbound.minutesAgo < 60 ? 1 : 0,
+      platform: c.channel,
+      accountId: c.accountId,
+      participantId: c.participantId,
+      participantName: c.name,
+      participantPicture: null,
+      lastMessage: lastMessage.text,
+      updatedTime: iso(lastMessage.minutesAgo),
+      status: "active" as const,
+      unreadCount: lastInbound && lastInbound.minutesAgo < 60 ? 1 : 0,
+      threadControl: c.aiDisabled ? ("other" as const) : ("ai_agent" as const),
       messages,
     };
   });
@@ -79,12 +96,12 @@ function seedConversations(): MockConversation[] {
 const INSTANCE = Math.random().toString(36).slice(2, 8);
 
 class MockZernioState {
-  accounts: MockAccount[] = DEMO_ACCOUNTS.map((a, i) => ({
+  accounts: MockAccount[] = DEMO_ACCOUNTS.map((a) => ({
     id: a.id,
-    channel: a.channel,
-    name: a.name,
-    status: "connected",
-    connected_at: iso(60 * 24 * (30 - i * 10)),
+    platform: a.channel,
+    username: a.id,
+    displayName: a.name,
+    isActive: true,
   }));
   conversations: MockConversation[] = seedConversations();
   webhooks: RestWebhook[] = [];
@@ -107,56 +124,83 @@ function state(): MockZernioState {
 /* ------------------------------------------------------------------ */
 
 export function mockListAccounts(): Promise<Result<RestAccount[]>> {
-  return Promise.resolve(ok(state().accounts.map(({ id, channel, name, status, connected_at }) => ({ id, channel, name, status, connected_at }))));
+  return Promise.resolve(ok(state().accounts));
 }
 
-export async function* mockIterateConversations(options: { channel?: Channel; accountId?: string } = {}): AsyncGenerator<RestConversation, void, void> {
+export async function* mockIterateConversations(
+  options: { channel?: Channel; accountId?: string } = {},
+): AsyncGenerator<RestConversation, void, void> {
   for (const c of state().conversations) {
-    if (options.channel && c.channel !== options.channel) continue;
-    if (options.accountId && c.account_id !== options.accountId) continue;
+    if (options.channel && c.platform !== options.channel) continue;
+    if (options.accountId && c.accountId !== options.accountId) continue;
     yield toRestConversation(c);
   }
 }
 
 export function mockListMessages(conversationId: string): Promise<Result<PageOfMessages>> {
   const conversation = state().conversations.find((c) => c.id === conversationId);
-  if (!conversation) return Promise.resolve({ success: false, error: `conversación ${conversationId} no existe` });
-  const data = [...conversation.messages].sort((a, b) => a.sent_at.localeCompare(b.sent_at));
-  return Promise.resolve(ok({ data, next_cursor: null } satisfies PageOfMessages));
+  if (!conversation) {
+    return Promise.resolve({ success: false, error: `conversación ${conversationId} no existe` });
+  }
+  const data = [...conversation.messages].sort((a, b) =>
+    (a.createdAt ?? "").localeCompare(b.createdAt ?? ""),
+  );
+  return Promise.resolve(ok({ messages: data, pagination: { hasMore: false, nextCursor: null } }));
 }
 
-export function mockSendMessage(conversationId: string, request: SendMessageRequest): Promise<Result<SendMessageResponse>> {
+export function mockSendMessage(
+  conversationId: string,
+  request: SendMessageRequest,
+): Promise<Result<SendMessageResponse>> {
   const conversation = state().conversations.find((c) => c.id === conversationId);
-  if (!conversation) return Promise.resolve({ success: false, error: `conversación ${conversationId} no existe` });
+  if (!conversation) {
+    return Promise.resolve({ success: false, error: `conversación ${conversationId} no existe` });
+  }
   const message: MockMessage = {
     id: state().nextId("msg"),
-    direction: "outbound",
-    type: request.type === "template" ? "template" : "text",
-    text: request.type === "template" ? `[plantilla: ${request.template_name}]` : (request.text ?? null),
-    status: "sent",
-    sent_at: new Date().toISOString(),
+    conversationId,
+    platform: conversation.platform,
+    message: request.template ? `[plantilla: ${request.template.name}]` : (request.message ?? null),
+    senderId: "me",
+    senderName: null,
+    direction: "outgoing",
+    createdAt: new Date().toISOString(),
+    attachments: [],
   };
   conversation.messages.push(message);
-  conversation.last_message_at = message.sent_at;
-  return Promise.resolve(ok({ id: message.id, status: "sent" }));
+  conversation.lastMessage = message.message ?? undefined;
+  conversation.updatedTime = message.createdAt;
+  return Promise.resolve(
+    ok({ success: true, data: { messageId: message.id, conversationId } }),
+  );
 }
 
-export function mockOpenConversation(request: OpenConversationRequest): Promise<Result<RestConversation>> {
+export function mockOpenConversation(
+  request: OpenConversationRequest,
+): Promise<Result<RestConversation>> {
   const conversation: MockConversation = {
     id: state().nextId("conv"),
-    channel: request.channel,
-    account_id: request.account_id,
-    participant: { id: request.to, name: null, handle: request.to, picture: null },
-    last_message_at: new Date().toISOString(),
-    unread_count: 0,
+    platform: "whatsapp",
+    accountId: request.accountId,
+    participantId: request.participantId ?? request.participantUsername ?? undefined,
+    participantName: undefined,
+    participantPicture: null,
+    lastMessage: request.message ?? undefined,
+    updatedTime: new Date().toISOString(),
+    status: "active",
+    unreadCount: 0,
+    threadControl: "ai_agent",
     messages: [
       {
         id: state().nextId("msg"),
-        direction: "outbound",
-        type: request.type === "template" ? "template" : "text",
-        text: request.text ?? null,
-        status: "sent",
-        sent_at: new Date().toISOString(),
+        conversationId: state().nextId("conv_x"),
+        platform: "whatsapp",
+        message: request.message ?? null,
+        senderId: "me",
+        senderName: null,
+        direction: "outgoing",
+        createdAt: new Date().toISOString(),
+        attachments: [],
       },
     ],
   };
@@ -168,72 +212,129 @@ export function mockListWebhooks(): Promise<Result<RestWebhook[]>> {
   return Promise.resolve(ok(state().webhooks));
 }
 
-export function mockRegisterWebhook(name: string, url: string, events: string[]): Promise<Result<RestWebhook>> {
+export function mockRegisterWebhook(
+  name: string,
+  url: string,
+  events: string[],
+  secret?: string,
+): Promise<Result<RestWebhook>> {
   const existing = state().webhooks.find((w) => w.name === name);
   if (existing) {
     existing.url = url;
     existing.events = events;
     return Promise.resolve(ok(existing));
   }
-  const created: RestWebhook = { id: state().nextId("wh"), name, url, events };
+  const created: RestWebhook = { _id: state().nextId("wh"), name, url, secret, events, isActive: true };
   state().webhooks.push(created);
   return Promise.resolve(ok(created));
 }
 
+/* ------------------------------------------------------------------ */
+/* Constructor de eventos de webhook (formas REALES del proveedor)     */
+/* ------------------------------------------------------------------ */
+
 /**
- * Construye un evento de webhook REALISTA (nombres del contrato webhook, no
- * del REST) para inyectarlo por el simulador local. Firman con el secreto
- * configurado, igual que el proveedor.
+ * Construye un evento `message.received` realista para inyectarlo por el
+ * simulador local. Los nombres de campo son los del webhook real
+ * (message/conversation/account), NO los del REST.
  */
-export function mockBuildIncomingEvent(conversationId: string, text: string): WebhookEvent {
+export function mockBuildIncomingEvent(conversationId: string, text: string): MessageReceivedEvent {
   const conversation = state().conversations.find((c) => c.id === conversationId);
   if (!conversation) throw new Error(`conversación ${conversationId} no existe`);
+  const isWhatsapp = conversation.platform === "whatsapp";
+  const participantId = conversation.participantId ?? "unknown";
+  const handle = participantId.replace(/[^0-9]/g, "");
   return {
     id: state().nextId("evt"),
-    type: "incoming_message",
-    created_at: new Date().toISOString(),
-    account_id: conversation.account_id,
-    conversation_id: conversation.id,
+    event: "message.received",
+    timestamp: new Date().toISOString(),
     message: {
       id: state().nextId("msg"),
-      incoming: true,
-      from: {
-        id: conversation.participant.id,
-        phone: conversation.channel === "whatsapp" ? conversation.participant.handle : null,
-        username: conversation.channel !== "whatsapp" ? conversation.participant.handle : null,
-        name: conversation.participant.name,
-        picture: null,
-      },
-      type: "text",
+      conversationId,
+      platform: conversation.platform,
+      platformMessageId: state().nextId("pmsg"),
+      direction: "incoming",
       text,
-      timestamp: new Date().toISOString(),
+      attachments: [],
+      sender: {
+        id: participantId,
+        name: conversation.participantName ?? undefined,
+        username: isWhatsapp ? undefined : participantId,
+        picture: undefined,
+        phoneNumber: isWhatsapp && handle ? `+${handle}` : null,
+        businessScopedUserId: isWhatsapp ? participantId : undefined,
+      },
+      sentAt: new Date().toISOString(),
+      isRead: false,
+    },
+    conversation: {
+      id: conversationId,
+      platformConversationId: conversationId,
+      participantId,
+      participantName: conversation.participantName ?? undefined,
+      participantUsername: isWhatsapp ? undefined : participantId,
+      participantPicture: undefined,
+      status: "active",
+    },
+    account: {
+      id: conversation.accountId ?? "acc_desconocida",
+      platform: conversation.platform,
+      username: conversation.accountId ?? "acc_desconocida",
     },
   };
 }
 
-export function mockBuildStatusEvent(messageId: string, status: "delivered" | "read" | "failed"): WebhookEvent {
+/** Evento de estado de entrega (message.delivered / message.read / message.failed). */
+export function mockBuildStatusEvent(
+  messageId: string,
+  event: "message.delivered" | "message.read" | "message.failed",
+): WebhookEvent {
   const conversation = state().conversations.find((c) => c.messages.some((m) => m.id === messageId));
   return {
     id: state().nextId("evt"),
-    type: "message_status",
-    created_at: new Date().toISOString(),
-    account_id: conversation?.account_id ?? null,
+    event,
+    statusAt: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
     message: {
       id: messageId,
-      incoming: false,
-      from: { id: "system" },
-      type: "text",
-      timestamp: new Date().toISOString(),
+      conversationId: conversation?.id ?? "conv_desconocida",
+      platform: conversation?.platform ?? "whatsapp",
+      platformMessageId: messageId,
+      direction: "outgoing",
+      text: null,
+      attachments: [],
+      sender: { id: "me" },
+      sentAt: new Date().toISOString(),
     },
-    status,
+    conversation: {
+      id: conversation?.id ?? "conv_desconocida",
+      platformConversationId: conversation?.id ?? "conv_desconocida",
+      participantId: conversation?.participantId ?? undefined,
+      status: "active",
+    },
+    account: {
+      id: conversation?.accountId ?? "acc_desconocida",
+      platform: conversation?.platform ?? "whatsapp",
+      username: conversation?.accountId ?? "acc_desconocida",
+    },
   };
 }
 
-export function mockBuildAccountEvent(type: "account_connected" | "account_disconnected", accountId: string): WebhookEvent {
+/** Evento de cuenta (account.connected / account.disconnected). */
+export function mockBuildAccountEvent(
+  event: "account.connected" | "account.disconnected",
+  accountId: string,
+): WebhookEvent {
+  const account = state().accounts.find((a) => a.id === accountId);
   return {
     id: state().nextId("evt"),
-    type,
-    created_at: new Date().toISOString(),
-    account_id: accountId,
+    event,
+    timestamp: new Date().toISOString(),
+    account: {
+      id: accountId,
+      platform: account?.platform ?? "whatsapp",
+      username: account?.username ?? accountId,
+      displayName: account?.displayName ?? undefined,
+    },
   };
 }
