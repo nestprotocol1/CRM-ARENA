@@ -6,6 +6,7 @@
  * En producción (Vercel) va el cliente real contra api.zernio.com.
  */
 
+import { DEMO_ACCOUNTS, DEMO_CONVERSATIONS } from "../demo-data";
 import { ok, type Result } from "./client";
 import type {
   Channel,
@@ -47,74 +48,9 @@ function iso(minutesAgo: number): string {
 }
 
 function seedConversations(): MockConversation[] {
-  const base: Array<{
-    id: string;
-    channel: Channel;
-    account_id: string;
-    participant: { id: string; name: string; handle: string; picture: null };
-    messages: Array<{ inbound: boolean; text: string; minutesAgo: number }>;
-  }> = [
-    {
-      id: "conv_wa_1001",
-      channel: "whatsapp",
-      account_id: "acc_wa_ventas",
-      participant: { id: "wa_573001112233", name: "María Fernández", handle: "+57 300 111 2233", picture: null },
-      messages: [
-        { inbound: true, text: "Hola, vi el anuncio de las llantas. ¿Tienen 205/55 R16?", minutesAgo: 46 },
-        { inbound: false, text: "¡Hola María! Sí, tenemos ese medida. ¿Para qué vehículo?", minutesAgo: 44 },
-        { inbound: true, text: "Para un Mazda 3 2019. ¿Precio por las cuatro?", minutesAgo: 3 },
-      ],
-    },
-    {
-      id: "conv_wa_1002",
-      channel: "whatsapp",
-      account_id: "acc_wa_ventas",
-      participant: { id: "wa_573015554444", name: "Carlos Ruiz", handle: "+57 301 555 4444", picture: null },
-      messages: [
-        { inbound: true, text: "Buenos días, quiero agendar una instalación", minutesAgo: 60 * 30 },
-        { inbound: false, text: "Con gusto. ¿Le sirve el sábado a las 9am?", minutesAgo: 60 * 29 },
-      ],
-    },
-    {
-      id: "conv_ig_2001",
-      channel: "instagram",
-      account_id: "acc_ig_tienda",
-      participant: { id: "ig_998877", name: "lau.ramirez", handle: "@lau.ramirez", picture: null },
-      messages: [
-        { inbound: true, text: "Hola! Me llegó el pedido pero falta un artículo 😕", minutesAgo: 12 },
-        { inbound: false, text: "Hola Lau, qué pena. ¿Me pasás el número de pedido?", minutesAgo: 11 },
-        { inbound: true, text: "Es el #4521", minutesAgo: 1 },
-      ],
-    },
-    {
-      id: "conv_ig_2002",
-      channel: "instagram",
-      account_id: "acc_ig_tienda",
-      participant: { id: "ig_112233", name: "andres.io", handle: "@andres.io", picture: null },
-      messages: [{ inbound: true, text: "Hacen envíos a Medellín?", minutesAgo: 90 }],
-    },
-    {
-      id: "conv_fb_3001",
-      channel: "facebook",
-      account_id: "acc_fb_soporte",
-      participant: { id: "fb_554433", name: "Diana Gómez", handle: "diana.gomez", picture: null },
-      messages: [
-        { inbound: true, text: "Necesito ayuda con una factura", minutesAgo: 7 },
-        { inbound: false, text: "Hola Diana, te ayudo. ¿Cuál es el número de factura?", minutesAgo: 6 },
-      ],
-    },
-    {
-      id: "conv_fb_3002",
-      channel: "facebook",
-      account_id: "acc_fb_soporte",
-      participant: { id: "fb_667788", name: "Pedro Ángel", handle: "pedro.angel", picture: null },
-      messages: [{ inbound: true, text: "El enlace de pago no funciona", minutesAgo: 240 }],
-    },
-  ];
-
-  return base.map((c) => {
-    const messages: MockMessage[] = c.messages.map((m, i) => ({
-      id: `${c.id}_m${i}`,
+  return DEMO_CONVERSATIONS.map((c) => {
+    const messages: MockMessage[] = c.messages.map((m) => ({
+      id: m.id,
       direction: m.inbound ? "inbound" : "outbound",
       type: "text",
       text: m.text,
@@ -122,12 +58,13 @@ function seedConversations(): MockConversation[] {
       sent_at: iso(m.minutesAgo),
     }));
     const lastInbound = [...c.messages].reverse().find((m) => m.inbound);
+    const lastMessage = c.messages[c.messages.length - 1];
     return {
       id: c.id,
       channel: c.channel,
-      account_id: c.account_id,
-      participant: c.participant,
-      last_message_at: iso(c.messages[c.messages.length - 1].minutesAgo),
+      account_id: c.accountId,
+      participant: { id: c.participantId, name: c.name, handle: c.handle, picture: null },
+      last_message_at: iso(lastMessage.minutesAgo),
       unread_count: lastInbound && lastInbound.minutesAgo < 60 ? 1 : 0,
       messages,
     };
@@ -135,11 +72,13 @@ function seedConversations(): MockConversation[] {
 }
 
 class MockZernioState {
-  accounts: MockAccount[] = [
-    { id: "acc_wa_ventas", channel: "whatsapp", name: "Ventas WhatsApp", status: "connected", connected_at: iso(60 * 24 * 30) },
-    { id: "acc_ig_tienda", channel: "instagram", name: "Tienda Instagram", status: "connected", connected_at: iso(60 * 24 * 20) },
-    { id: "acc_fb_soporte", channel: "facebook", name: "Soporte Messenger", status: "connected", connected_at: iso(60 * 24 * 10) },
-  ];
+  accounts: MockAccount[] = DEMO_ACCOUNTS.map((a, i) => ({
+    id: a.id,
+    channel: a.channel,
+    name: a.name,
+    status: "connected",
+    connected_at: iso(60 * 24 * (30 - i * 10)),
+  }));
   conversations: MockConversation[] = seedConversations();
   webhooks: RestWebhook[] = [];
   private counter = 1000;
@@ -247,6 +186,7 @@ export function mockBuildIncomingEvent(conversationId: string, text: string): We
     type: "incoming_message",
     created_at: new Date().toISOString(),
     account_id: conversation.account_id,
+    conversation_id: conversation.id,
     message: {
       id: state().nextId("msg"),
       incoming: true,

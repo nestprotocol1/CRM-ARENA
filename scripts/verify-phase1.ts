@@ -4,6 +4,7 @@
  *
  * Uso: npm run db:counts
  */
+import "./load-env";
 import { sql } from "drizzle-orm";
 import { closeDb, getDb } from "../src/db";
 

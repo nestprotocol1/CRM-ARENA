@@ -8,6 +8,7 @@
  * Contra la API real requiere ZERNIO_API_KEY. Con ZERNIO_MOCK=1 corre contra
  * el proveedor mock local.
  */
+import "./load-env";
 import {
   iterateProviderConversations,
   listProviderAccounts,

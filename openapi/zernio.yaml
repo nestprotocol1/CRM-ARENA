@@ -164,9 +164,18 @@ components:
             - account_disconnected
         created_at: { type: string, format: date-time }
         account_id: { type: [string, "null"] }
+        conversation_id: { type: [string, "null"], description: external_id del hilo en el proveedor }
         message: { $ref: "#/components/schemas/WebhookIncomingMessage" }
         status: { type: [string, "null"], enum: [sent, delivered, read, failed, null] }
         referral: { $ref: "#/components/schemas/WebhookReferral" }
+        account:
+          type: object
+          description: Solo en account_connected.
+          properties:
+            id: { type: string }
+            channel: { type: string, enum: [whatsapp, instagram, facebook] }
+            name: { type: [string, "null"] }
+          required: [id, channel]
       required: [id, type, created_at]
 
 paths:

@@ -14,7 +14,8 @@
     "db:seed": "tsx scripts/seed-demo.ts",
     "zernio": "tsx scripts/zernio-cli.ts",
     "webhook:register": "tsx scripts/register-webhook.ts",
-    "backfill": "tsx scripts/backfill.ts"
+    "backfill": "tsx scripts/backfill.ts",
+    "test:webhook": "tsx scripts/test-webhook-idempotency.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.11",

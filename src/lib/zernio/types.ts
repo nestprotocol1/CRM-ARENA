@@ -146,14 +146,24 @@ export interface WebhookReferral {
   ad_id?: string | null;
 }
 
+export interface WebhookAccountInfo {
+  id: string;
+  channel: Channel;
+  name?: string | null;
+}
+
 export interface WebhookEvent {
   id: string;
   type: WebhookEventType;
   created_at: string;
   account_id?: string | null;
+  /** external_id del hilo en el proveedor (la clave de conversations). */
+  conversation_id?: string | null;
   message?: WebhookIncomingMessage;
   status?: "sent" | "delivered" | "read" | "failed" | null;
   referral?: WebhookReferral;
+  /** Solo en account_connected: la cuenta que se conectó. */
+  account?: WebhookAccountInfo;
 }
 
 /* ------------------------------------------------------------------ */
@@ -202,9 +212,17 @@ export const webhookEventSchema = z.object({
   type: z.enum(["incoming_message", "message_status", "account_connected", "account_disconnected"]),
   created_at: z.string(),
   account_id: z.string().nullish(),
+  conversation_id: z.string().nullish(),
   message: webhookMessageSchema.optional(),
   status: z.enum(["sent", "delivered", "read", "failed"]).nullish(),
   referral: webhookReferralSchema.optional(),
+  account: z
+    .object({
+      id: z.string(),
+      channel: z.enum(["whatsapp", "instagram", "facebook"]),
+      name: z.string().nullish(),
+    })
+    .optional(),
 });
 
 export type WebhookEventParsed = z.infer<typeof webhookEventSchema>;

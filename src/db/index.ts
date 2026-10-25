@@ -1,5 +1,4 @@
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
-import type { PgliteDatabase } from "drizzle-orm/pglite";
 import { drizzle as drizzlePostgres } from "drizzle-orm/postgres-js";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "./schema";
@@ -14,7 +13,13 @@ import * as schema from "./schema";
  * El schema y las migraciones son los mismos en los dos caminos.
  */
 
-export type Database = PostgresJsDatabase<typeof schema> | PgliteDatabase<typeof schema>;
+/**
+ * Un solo tipo de base para todo el proyecto. PGlite y postgres-js exponen la
+ * misma interfaz de query builder; el cast vive en la creación de cada uno.
+ * (Si el tipo fuera la unión de los dos, TypeScript no resuelve los métodos
+ * encadenados como .returning() sobre la unión.)
+ */
+export type Database = PostgresJsDatabase<typeof schema>;
 
 type CloseableClient = { close?: () => Promise<void>; end?: () => Promise<void> };
 
