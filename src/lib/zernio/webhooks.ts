@@ -33,14 +33,22 @@ export function verifyWebhookSignature(
 
   // Chequeo de longitud previo: timingSafeEqual tira si los buffers difieren
   // de largo, y eso además filtra basura antes de comparar.
-  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  const body = typeof rawBody === "string" ? Buffer.from(rawBody, "utf8") : rawBody;
+  const expectedHex = createHmac("sha256", secret).update(body).digest("hex");
   const provided = signature.startsWith("sha256=") ? signature.slice(7) : signature;
-  if (provided.length !== expected.length) {
-    return { valid: false, reason: "longitud de firma inválida" };
-  }
 
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(provided, "utf8");
-  const valid = timingSafeEqual(a, b); // comparación de tiempo constante
-  return valid ? { valid: true } : { valid: false, reason: "firma no coincide" };
+  // Zernio manda la firma en X-Zernio-Signature. Aceptamos hex (lo más
+  // habitual) y base64, porque no se pudo verificar el formato exacto contra
+  // la API real desde el entorno de desarrollo.
+  const candidates = [
+    Buffer.from(expectedHex, "utf8"),
+    Buffer.from(createHmac("sha256", secret).update(body).digest("base64"), "utf8"),
+  ];
+  const providedBuf = Buffer.from(provided, "utf8");
+  for (const expected of candidates) {
+    if (expected.length === providedBuf.length && timingSafeEqual(expected, providedBuf)) {
+      return { valid: true };
+    }
+  }
+  return { valid: false, reason: "firma no coincide" };
 }
