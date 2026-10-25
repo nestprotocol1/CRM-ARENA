@@ -64,6 +64,7 @@ Hace tres cosas, todas idempotentes:
    | `ZERNIO_BASE_URL` | `https://zernio.com/api` (o vacío: es el default) |
    | `OPENROUTER_API_KEY` | key de OpenRouter (el LLM del agente) |
    | `BACKFILL_TOKEN` | token del barrido (Bearer o `X-Backfill-Token`) |
+   | `CRM_PASSWORD` | contraseña del candado de la app. **Vacío = app abierta** (ver 2.1) |
 
 4. **NO setear `ZERNIO_MOCK` en producción.** Vacío = API real de Zernio.
    Con `ZERNIO_MOCK=1` la app arranca con un log de advertencia: los mensajes
@@ -74,8 +75,36 @@ Hace tres cosas, todas idempotentes:
    conteste nunca, sin un solo error visible.
 
 6. Migraciones en el build: `vercel.json` corre `npm run db:migrate` antes de
-   `npm run build`, solo si `DATABASE_URL` está definida. Si preferís correrlas
+   `npm run build`, solo si `DATABASE_URL` está definida. Si preferés correrlas
    a mano, borrá la clave `buildCommand` de `vercel.json`.
+
+### 2.1 El candado: `CRM_PASSWORD`
+
+`src/proxy.ts` corre en cada request. **Si `CRM_PASSWORD` está definida, todo
+lo que no sea público pide cookie de sesión; si está vacía, la app queda
+abierta** (por eso en desarrollo no molesta).
+
+Públicas siempre (las necesita el mundo exterior, no el navegador):
+
+| Ruta | Por qué |
+| --- | --- |
+| `/login` | la pantalla que entrega la cookie |
+| `/api/auth/login`, `/api/auth/logout` | el endpoint que firma la cookie y el que la borra |
+| `/api/webhooks/*` | Zernio manda server-to-server: no tiene cookie. Si se la pidiéramos cada evento daría 401 y **el CRM no recibiría nada**, sin un error visible en la app |
+| `/api/backfill` | lo llama GitHub Actions con su propio `Bearer` |
+
+Detalles que importan:
+
+- La cookie es un **HMAC de la contraseña** (`src/lib/auth/session.ts`, Web
+  Crypto). No hay tabla de sesiones que invalidar: cambiar `CRM_PASSWORD`
+  invalida todas las cookies de golpe.
+- **No se comparan contraseñas, se comparan firmas** (largo constante), así el
+  tiempo de respuesta no filtra el largo ni el contenido.
+- Las APIs responden `401` en JSON; las páginas redirigen a
+  `/login?from=<ruta>` y al entrar vuelven a esa ruta.
+- Para entrar: `/login`. Para salir: botón **Salir** del header.
+- Si olvidás la contraseña, se cambia la variable en Vercel y se redespliega:
+  a los usuarios logueados les va a pedir entrar de nuevo.
 
 ---
 
@@ -140,13 +169,28 @@ seguridad y no el camino normal.
 
 ## Verificación después de deployar
 
-1. `GET /api/webhooks/zernio` responde **401** sin firma (fail-closed).
-2. `GET /inbox` muestra las conversaciones (si sembraste demo, las 7).
-3. Enviar un mensaje real por WhatsApp a la cuenta conectada: aparece en la
+**El candado** (si seteaste `CRM_PASSWORD`; si la dejaste vacía, saltá este bloque):
+
+1. `https://<tu-dominio>/inbox` **sin** entrar redirige a `/login?from=/inbox`.
+2. `https://<tu-dominio>/api/webhooks/zernio` responde **401** sin firma
+   (fail-closed). **Ojo:** esto tiene que ser `401 {"error":"firma inválida"}`,
+   no un redirect a `/login` — si redirige, el gate se está comiendo al webhook
+   y Zernio nunca podría entregar nada.
+3. Entrar con la contraseña correcta: vuelve a `/inbox` y aparece el header
+   con **Bandeja**, **Ajustes** y **Salir**. Con la contraseña incorrecta,
+   `401` y no pasa nada.
+
+**La app:**
+
+4. `/inbox` muestra las conversaciones (si sembraste demo, las 7).
+5. Con la bandeja vacía, el empty state explica el siguiente paso en vez de
+   quedar en blanco: distingue "no hay cuentas conectadas" (manda a Ajustes)
+   de "hay cuentas pero todavía no llegó nada".
+6. Enviar un mensaje real por WhatsApp a la cuenta conectada: aparece en la
    bandeja en segundos (Realtime, sin recargar).
-4. Si el agente está prendido en ese canal, contesta solo.
-5. `GET /api/webhooks/zernio` no lista eventos sin procesar.
-6. En los logs de Vercel NO debe aparecer el aviso de `ZERNIO_MOCK=1`.
+7. Si el agente está prendido en ese canal, contesta solo.
+8. `GET /api/webhooks/zernio` no lista eventos sin procesar.
+9. En los logs de Vercel NO debe aparecer el aviso de `ZERNIO_MOCK=1`.
 
 ## Si algo falla
 

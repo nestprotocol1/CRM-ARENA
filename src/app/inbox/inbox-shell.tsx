@@ -7,9 +7,10 @@
  */
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useCallback, useState } from "react";
 import { Search } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 import { ConversationRow } from "@/lib/queries";
@@ -26,15 +27,21 @@ const CHANNEL_FILTERS: Array<{ value: Channel | "all"; label: string }> = [
 
 export function InboxShell({
   conversations,
+  connectedAccounts,
   activeQ,
   activeChannel,
 }: {
   conversations: ConversationRow[];
+  /** Cuentas conectadas: diferencia "sin cuentas" de "sin conversaciones". */
+  connectedAccounts: number;
   activeQ: string;
   activeChannel: string;
 }) {
   const router = useRouter();
   const [q, setQ] = useState(activeQ);
+
+  // Hay filtro activo si se busca por texto o se filtra por un canal puntual.
+  const filterActive = Boolean(activeQ.trim()) || (activeChannel !== "" && activeChannel !== "all");
 
   // La lista se actualiza sola cuando entra un mensaje o cambia una
   // conversación (nuevo hilo, no leídos, handover). Sin Realtime configurado,
@@ -101,9 +108,29 @@ export function InboxShell({
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             {conversations.length === 0 && (
-              <p className="p-6 text-center text-sm text-muted-foreground">
-                No hay conversaciones para este filtro.
-              </p>
+              <div className="space-y-3 p-6 text-center">
+                {connectedAccounts === 0 ? (
+                  <>
+                    <p className="text-sm font-medium">Todavía no hay conversaciones</p>
+                    <p className="text-sm text-muted-foreground">
+                      Conectá una cuenta de WhatsApp, Instagram o Messenger y los mensajes
+                      que lleguen aparecen acá automáticamente.
+                    </p>
+                    <Link href="/settings" className={cn(buttonVariants({ size: "sm" }))}>
+                      Conectar cuenta
+                    </Link>
+                  </>
+                ) : filterActive ? (
+                  <p className="text-sm text-muted-foreground">
+                    No hay conversaciones para este filtro.
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No hay conversaciones todavía. Los mensajes aparecen acá en cuanto
+                    lleguen por el webhook.
+                  </p>
+                )}
+              </div>
             )}
             {conversations.map((conversation) => (
               <button

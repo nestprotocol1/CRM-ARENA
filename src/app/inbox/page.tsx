@@ -9,7 +9,7 @@
 
 import { Suspense } from "react";
 import { InboxShell } from "./inbox-shell";
-import { listConversations } from "@/lib/queries";
+import { countConnectedAccounts, listConversations } from "@/lib/queries";
 import { isChannel } from "@/lib/zernio/types";
 
 // cacheComponents: esta ruta lee de la base en cada request; no se prerenderiza.
@@ -22,12 +22,16 @@ interface PageProps {
 export default async function InboxPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const channel = params.channel && isChannel(params.channel) ? params.channel : undefined;
-  const conversations = await listConversations({ q: params.q, channel });
+  const [conversations, connectedAccounts] = await Promise.all([
+    listConversations({ q: params.q, channel }),
+    countConnectedAccounts(),
+  ]);
 
   return (
     <Suspense>
       <InboxShell
         conversations={conversations}
+        connectedAccounts={connectedAccounts}
         activeQ={params.q ?? ""}
         activeChannel={params.channel ?? ""}
       />

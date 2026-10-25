@@ -7,7 +7,7 @@
 
 import { desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, messages } from "@/db/schema";
+import { channelAccounts, conversations, messages } from "@/db/schema";
 import type { Channel } from "@/lib/zernio/types";
 import { computeWindow, type WindowState } from "@/lib/window";
 
@@ -92,6 +92,20 @@ export async function listConversations(filters: ListFilters = {}): Promise<Conv
         : null,
     };
   });
+}
+
+/**
+ * Cuentas conectadas. La bandeja la usa para distinguir dos vacíos que no son
+ * el mismo problema: "no conectaste ninguna cuenta" (se arregla en Ajustes) de
+ * "no hay conversaciones para este filtro" (se arregla cambiando el filtro).
+ */
+export async function countConnectedAccounts(): Promise<number> {
+  const db = await getDb();
+  const rows = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(channelAccounts)
+    .where(eq(channelAccounts.status, "connected"));
+  return rows[0]?.n ?? 0;
 }
 
 export interface ConversationDetail {

@@ -84,19 +84,57 @@ en silencio, que es mucho peor.
 ## Fases
 
 1. Modelo de datos y migración ✅
-2. Cliente de la API, tipado contra el OpenAPI
-3. Webhook entrante y persistencia
-4. Bandeja: listar, abrir y responder
-5. Agente por canal
-6. Deploy, conexión de cuentas y barridos
+2. Cliente de la API, tipado contra el OpenAPI ✅
+3. Webhook entrante y persistencia ✅
+4. Bandeja: listar, abrir y responder ✅
+5. Agente por canal ✅
+6. Deploy, conexión de cuentas y barridos ✅
 
-## Las cinco trampas (ninguna da error)
+## El gate de sesión (CRM_PASSWORD)
+
+`src/proxy.ts` corre en cada request. Si `CRM_PASSWORD` está definida, todo lo
+que no sea público pide cookie de sesión; **si está vacía, la app queda
+abierta** (así no estorba en desarrollo).
+
+- Públicas siempre: `/login`, `/api/auth/*`, `/api/webhooks/*` (Zernio manda
+  server-to-server y no tiene cookie), `/api/backfill` (lo llama GitHub Actions
+  con su Bearer propio).
+- La cookie es un **HMAC de la contraseña**, no un id de sesión: no hay tabla
+  que invalidar y cambiar la contraseña echa a todos de golpe.
+- Se comparan **firmas, no contraseñas** (`safeEqual`, largo constante).
+- Páginas: redirect a `/login?from=<ruta>`. APIs: `401` en JSON.
+- La firma se calcula en `src/lib/auth/session.ts` y la comparten el proxy y el
+  endpoint de login. **Si cada lado la calcula a su manera, la cookie que emite
+  el login no la valida el proxy y nadie puede entrar.**
+
+## La interfaz
+
+- `src/components/app-header.tsx` es el header único: título, **Bandeja**,
+  **Ajustes** y **Salir**. No se muestra en `/login` (ya tiene su propio layout
+  centrado). Se renderiza desde `src/app/layout.tsx`.
+- La bandeja tiene tres empty states distintos, porque "no conectaste ninguna
+  cuenta" y "conectaste pero todavía no llegó nada" piden acciones distintas:
+  el primero manda a Ajustes, el segundo explica qué esperar.
+- `/settings` solo es alcanzable escribiendo la URL o desde el header.
+- La lista y el panel de chat se refrescan por Realtime
+  (`src/hooks/use-realtime-refresh.ts`), sin polling.
+
+## Las trampas (ninguna da error)
 
 1. Adivinar nombres de campos del proveedor → cada mensaje entrante se descarta.
 2. Índice de idempotencia compuesto `(provider, external_id)` → duplicados al migrar de proveedor.
 3. Dos caminos de salida (agente inserta por un lado, UI por otro) → respuestas que no figuran en el historial.
 4. URL base fija (`localhost:3000` copiada a prod) → el agente no contesta jamás, sin errores.
 5. Cron cada 10 min en GitHub Actions → USD 18,56/mes (factura por minuto redondeado hacia arriba). Cada 30 min entra gratis y alcanza.
+6. **`node:crypto` en el middleware.** El middleware corre en el Edge Runtime y
+   ahí no existe: el build pasa en verde y **cada request da 500 recién al
+   servir**, con `Failed to load external module node:crypto`. Toda la
+   criptografía del gate va con Web Crypto (`crypto.subtle`), compartida en
+   `src/lib/auth/session.ts`. Regla: si hay que hashear o firmar en el proxy,
+   se usa `crypto.subtle`, nunca un import de `node:`.
+7. **`z.discriminatedUnion` con `z.enum` multi-literal en el discriminante no
+   permite narrowing:** `Extract<Union, {event:"…"}>` da `never`. Cada rama
+   necesita su propio `z.literal` (se logra con esquemas base + `.extend()`).
 
 ## Entorno (.env.local, nunca en git)
 
