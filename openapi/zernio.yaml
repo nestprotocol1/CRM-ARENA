@@ -1,0 +1,290 @@
+# Contrato de la API de Zernio (proveedor único de WhatsApp, Instagram y Messenger).
+#
+# REGLA DURA: el cliente HTTP se tipa contra ESTE archivo. No se adivinan
+# nombres de campos en el código: un nombre mal adivinado no rompe el build,
+# descarta cada mensaje que entra.
+#
+# ESTADO: este archivo es el contrato local derivado de la guía de
+# arquitectura. Para producción, descargar el OpenAPI real de
+# docs.zernio.com y reemplazarlo — los tipos de src/lib/zernio/types.ts se
+# ajustan a ese archivo, nunca al revés.
+#
+# NOTA CENTRAL (trampa #1): la forma que llega por WEBHOOK y la que devuelve
+# el REST casi nunca coinciden en los nombres de los campos. Son dos tipos
+# distintos, no uno. Acá están modelados como dos schemas separados a
+# propósito:
+#   - REST message:  { id, direction: "inbound"|"outbound", text, sent_at, sender }
+#   - Webhook event: { id, type: "incoming_message", message: { id, incoming: true,
+#                       from: {...}, text, timestamp } }
+
+openapi: 3.1.0
+info:
+  title: Zernio Messaging API
+  version: "1.0"
+  description: API del proveedor de mensajería multicanal.
+servers:
+  - url: https://api.zernio.com
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+
+  schemas:
+    # ---------------- REST ----------------
+    Participant:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: [string, "null"] }
+        handle: { type: [string, "null"], description: "@usuario en redes; phone en WhatsApp }
+        picture: { type: [string, "null"] }
+      required: [id]
+
+    Conversation:
+      type: object
+      properties:
+        id: { type: string, description: external_id del hilo en el proveedor }
+        channel: { type: string, enum: [whatsapp, instagram, facebook] }
+        account_id: { type: string }
+        participant: { $ref: "#/components/schemas/Participant" }
+        last_message_at: { type: [string, "null"], format: date-time }
+        unread_count: { type: integer }
+      required: [id, channel, account_id, participant]
+
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        direction: { type: string, enum: [inbound, outbound] }
+        type: { type: string, enum: [text, template, image, audio, video, document, sticker, location, reaction, other] }
+        text: { type: [string, "null"] }
+        status: { type: string, enum: [pending, sent, delivered, read, failed] }
+        sent_at: { type: string, format: date-time }
+      required: [id, direction, type, status, sent_at]
+
+    PageOfConversations:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Conversation" }
+        next_cursor: { type: [string, "null"] }
+      required: [data]
+
+    PageOfMessages:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+        next_cursor: { type: [string, "null"] }
+      required: [data]
+
+    SendMessageRequest:
+      type: object
+      properties:
+        type: { type: string, enum: [text, template], default: text }
+        text: { type: [string, "null"] }
+        template_name: { type: [string, "null"], description: requerido si type = template }
+        human_agent_tag: { type: boolean, default: false, description: etiqueta de agente humano (ventana de 7 días) }
+      required: [type]
+
+    SendMessageResponse:
+      type: object
+      properties:
+        id: { type: string, description: external_id del mensaje saliente }
+        status: { type: string, enum: [sent, delivered, read, failed] }
+      required: [id, status]
+
+    OpenConversationRequest:
+      type: object
+      properties:
+        account_id: { type: string }
+        channel: { type: string, enum: [whatsapp, instagram, facebook] }
+        to: { type: string, description: external_id del destinatario (teléfono o user id) }
+        type: { type: string, enum: [text, template], default: text }
+        text: { type: [string, "null"] }
+        template_name: { type: [string, "null"] }
+      required: [account_id, channel, to, type]
+
+    Account:
+      type: object
+      properties:
+        id: { type: string }
+        channel: { type: string, enum: [whatsapp, instagram, facebook] }
+        name: { type: [string, "null"] }
+        status: { type: string, enum: [connected, disconnected] }
+        connected_at: { type: string, format: date-time }
+      required: [id, channel, status]
+
+    # ---------------- Webhook (nombres DISTINTOS a REST, a propósito) ----------------
+    WebhookSender:
+      type: object
+      properties:
+        id: { type: string, description: id del participante en el proveedor }
+        phone: { type: [string, "null"] }
+        username: { type: [string, "null"] }
+        name: { type: [string, "null"] }
+        picture: { type: [string, "null"] }
+      required: [id]
+
+    WebhookIncomingMessage:
+      type: object
+      properties:
+        id: { type: string }
+        incoming: { type: boolean }
+        from: { $ref: "#/components/schemas/WebhookSender" }
+        type: { type: string, enum: [text, image, audio, video, document, sticker, location, reaction, other] }
+        text: { type: [string, "null"] }
+        timestamp: { type: string, format: date-time }
+        reply_to: { type: [string, "null"] }
+      required: [id, incoming, from, type, timestamp]
+
+    WebhookReferral:
+      type: object
+      description: Atribución del anuncio. Si el proveedor la manda, guardarla: después no se recupera.
+      properties:
+        source: { type: string, enum: [ad, post, direct, other] }
+        campaign_id: { type: [string, "null"] }
+        adset_id: { type: [string, "null"] }
+        ad_id: { type: [string, "null"] }
+
+    WebhookEvent:
+      type: object
+      properties:
+        id: { type: string, description: event_id — clave de idempotencia }
+        type:
+          type: string
+          enum:
+            - incoming_message
+            - message_status
+            - account_connected
+            - account_disconnected
+        created_at: { type: string, format: date-time }
+        account_id: { type: [string, "null"] }
+        message: { $ref: "#/components/schemas/WebhookIncomingMessage" }
+        status: { type: [string, "null"], enum: [sent, delivered, read, failed, null] }
+        referral: { $ref: "#/components/schemas/WebhookReferral" }
+      required: [id, type, created_at]
+
+paths:
+  /v1/accounts:
+    get:
+      summary: Listar cuentas conectadas
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+                required: [data]
+
+  /v1/conversations:
+    get:
+      summary: Listar conversaciones (paginado por cursor)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 100 } }
+        - { name: channel, in: query, schema: { type: string, enum: [whatsapp, instagram, facebook] } }
+        - { name: account_id, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfConversations" }
+    post:
+      summary: Abrir conversación nueva (endpoint DISTINTO al de responder)
+      security: [{ bearer: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpenConversationRequest" }
+      responses:
+        "201":
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+
+  /v1/conversations/{conversationId}/messages:
+    get:
+      summary: Listar mensajes de un hilo (paginado por cursor)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: conversationId, in: path, required: true, schema: { type: string } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 100 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfMessages" }
+    post:
+      summary: Enviar mensaje en un hilo abierto
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: conversationId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendMessageRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SendMessageResponse" }
+
+  /v1/webhooks:
+    get:
+      summary: Listar webhooks registrados (buscar por nombre antes de crear)
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        url: { type: string }
+                        events:
+                          type: array
+                          items: { type: string }
+                required: [data]
+    post:
+      summary: Registrar (o actualizar) el webhook
+      security: [{ bearer: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                url: { type: string }
+                events:
+                  type: array
+                  items: { type: string }
+              required: [name, url, events]
+      responses:
+        "200":
+          description: OK

@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CRM Multicanal
 
-## Getting Started
+Bandeja única donde entran y se responden **WhatsApp**, **Instagram DM** y
+**Facebook Messenger**, con un agente de IA configurable por canal que contesta
+solo.
 
-First, run the development server:
+- **Stack:** Next.js 16 (App Router) + React 19 + TypeScript + Tailwind 4
+- **Base:** Supabase (Postgres + Auth) con Drizzle ORM. En local corre sobre
+  [PGlite](https://pglite.dev) (Postgres real compilado a WASM, sin Docker).
+- **Proveedor de mensajería:** Zernio (los tres canales por un solo cliente HTTP).
+- **Agente:** un LLM vía OpenRouter, con prompt/herramientas/interruptor por canal.
+- **Deploy:** Vercel con Fluid Compute.
+
+Las reglas de arquitectura (canal vs proveedor, conversación como unidad,
+identidad sin teléfono, idempotencia, un solo camino de salida, ventana de 24 h
+decidida por el servidor) están en [CLAUDE.md](./CLAUDE.md). Léelo antes de
+tocar el código.
+
+## Arranque local
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # opcional: todo funciona sin credenciales
+npm run db:migrate           # aplica migraciones (PGlite local)
+npm run db:seed              # datos de demo (opcional)
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Verificación
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint
+npm run build       # build de producción
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Scripts
 
-## Learn More
+| Script | Qué hace |
+| --- | --- |
+| `db:migrate` | Aplica `migrations/` contra PGlite (local) o Supabase (`DATABASE_URL`) |
+| `db:counts` | Conteo de filas por tabla (verificación de la Fase 1) |
+| `db:seed` | Datos de demo: conversaciones y mensajes de los tres canales |
+| `zernio` | CLI contra la API real: lista cuentas y conversaciones |
+| `webhook:register` | Registra/actualiza el webhook por API (busca por nombre) |
+| `backfill` | Importa historial del proveedor (sin disparar el agente) |
 
-To learn more about Next.js, take a look at the following resources:
+## Fases
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. ✅ Modelo de datos y migración
+2. Cliente de la API, tipado contra el OpenAPI
+3. Webhook entrante y persistencia
+4. Bandeja: listar, abrir y responder
+5. Agente por canal
+6. Deploy, conexión de cuentas y barridos
