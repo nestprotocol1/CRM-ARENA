@@ -123,6 +123,7 @@ export async function getConversationDetail(conversationId: string): Promise<Con
       type: messages.type,
       body: messages.body,
       status: messages.status,
+      rawPayload: messages.rawPayload,
       sentAt: messages.sentAt,
     })
     .from(messages)
@@ -144,10 +145,17 @@ export async function getConversationDetail(conversationId: string): Promise<Con
       aiEnabled: row.aiEnabled,
       metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     },
-    messages: messageRows.map((m) => ({
-      ...m,
-      sentAt: m.sentAt.toISOString(),
-    })),
+    // Las notas internas del agente no se muestran en el hilo del cliente.
+    messages: messageRows
+      .filter((m) => !m.rawPayload?.internal)
+      .map((m) => ({
+        id: m.id,
+        direction: m.direction,
+        type: m.type,
+        body: m.body,
+        status: m.status,
+        sentAt: m.sentAt.toISOString(),
+      })),
     window: computeWindow(row.lastInboundAt, row.channel as Channel),
   };
 }

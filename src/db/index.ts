@@ -1,6 +1,8 @@
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { drizzle as drizzlePostgres } from "drizzle-orm/postgres-js";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as schema from "./schema";
 
 /**
@@ -37,10 +39,23 @@ export function usingSupabase(): boolean {
   return Boolean(getDatabaseUrl());
 }
 
+/**
+ * Directorio de datos de PGlite como ruta ABSOLUTA, derivada de la ubicación
+ * de este módulo. Si fuera relativa, los workers del build (que corren con
+ * otro cwd) apuntarían a cualquier lado y el WASM aborta.
+ */
+function defaultDataDir(): string {
+  // Ojo: NO usar new URL(ruta, import.meta.url) — Turbopack lo interpreta
+  // como un asset y falla el build. Se resuelve con path sobre la url del
+  // módulo, que es equivalente pero invisible para el bundler.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, "../../.data/pglite");
+}
+
 async function createLocalDatabase(): Promise<Database> {
   const { mkdirSync } = await import("node:fs");
   const { PGlite } = await import("@electric-sql/pglite");
-  const dataDir = process.env.PGLITE_DATA_DIR ?? ".data/pglite";
+  const dataDir = process.env.PGLITE_DATA_DIR ?? defaultDataDir();
   // PGlite hace mkdir del dataDir pero asume que el padre existe.
   mkdirSync(dataDir, { recursive: true });
   const client = new PGlite(dataDir);

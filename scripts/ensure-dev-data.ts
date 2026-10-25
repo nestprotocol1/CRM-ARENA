@@ -10,6 +10,8 @@
  * Lo llama instrumentation.ts al arrancar Next.
  */
 import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -26,7 +28,9 @@ import * as schema from "../src/db/schema";
 export async function ensureDevData(): Promise<void> {
   if (process.env.DATABASE_URL) return; // producción: migraciones por pipeline
 
-  const dataDir = process.env.PGLITE_DATA_DIR ?? ".data/pglite";
+  const dataDir =
+    process.env.PGLITE_DATA_DIR ??
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.data/pglite");
   mkdirSync(dataDir, { recursive: true });
   const client = new PGlite(dataDir);
   const db = drizzle(client, { schema });
