@@ -67,7 +67,9 @@ async function main() {
   const checks = {
     "1ra entrega 200 y procesada": first.status === 200 && first.body.action === "processed",
     "2da entrega 200 y duplicada": second.status === 200 && second.body.action === "duplicate",
-    "1 mensaje nuevo": afterFirst.messages === before.messages + 1,
+    // El mensaje entra y, si el agente del canal está prendido, también
+    // contesta: por eso es >= 1 y no exactamente 1.
+    "mensajes nuevos tras la 1ra entrega": afterFirst.messages >= before.messages + 1,
     // La conversación del evento ya existe (está sembrada): no debe crearse otra.
     "conversaciones sin cambios": afterFirst.conversations === before.conversations,
     "1 evento reclamado": afterFirst.webhook_events === before.webhook_events + 1,

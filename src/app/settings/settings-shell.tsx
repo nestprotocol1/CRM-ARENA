@@ -73,6 +73,7 @@ export function SettingsShell() {
             );
           })}
           <TabsTrigger value="global">Global</TabsTrigger>
+          <TabsTrigger value="cuentas">Cuentas</TabsTrigger>
         </TabsList>
 
         {[...CHANNELS, "global" as const].map((channel) => (
@@ -95,7 +96,106 @@ export function SettingsShell() {
             />
           </TabsContent>
         ))}
+        <TabsContent value="cuentas">
+          <AccountsTab />
+        </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+interface AccountRow {
+  id: string;
+  provider: string;
+  channel: string;
+  externalId: string;
+  name: string | null;
+  status: string;
+  connectedAt: string;
+}
+
+function AccountsTab() {
+  const [accounts, setAccounts] = useState<AccountRow[] | null>(null);
+
+  const load = useCallback(() => {
+    fetch("/api/accounts")
+      .then((r) => r.json())
+      .then((data: { accounts?: AccountRow[] }) => setAccounts(data.accounts ?? []))
+      .catch(() => setAccounts([]));
+  }, []);
+
+  useEffect(load, [load]);
+
+  /**
+   * Conectar cuenta por OAuth en un popup.
+   *
+   * La ventana se abre de forma SÍNCRONA con el click, ANTES del await que
+   * pide la URL de autorización: si se abriera cuando resuelve la promesa,
+   * el navegador la trata como emergente no solicitada y la bloquea.
+   */
+  function connect(channel: string) {
+    const popup = window.open("about:blank", "oauth_zernio", "width=620,height=720");
+    if (!popup) {
+      alert("El navegador bloqueó el popup. Permití popups para conectar cuentas.");
+      return;
+    }
+    fetch(`/api/accounts/oauth-url?channel=${channel}`)
+      .then((r) => r.json())
+      .then((data: { url?: string }) => {
+        if (data.url) popup.location.href = data.url;
+        else popup.close();
+      })
+      .catch(() => popup.close());
+    // Al cerrarse el popup, refrescar la lista.
+    const timer = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(timer);
+        load();
+      }
+    }, 800);
+  }
+
+  return (
+    <div className="mt-4 space-y-4 rounded-xl border p-5">
+      <div>
+        <p className="font-medium">Cuentas conectadas</p>
+        <p className="text-xs text-muted-foreground">
+          El id externo de cada cuenta es la clave con la que se rutea todo lo que entra por
+          webhook.
+        </p>
+      </div>
+
+      {accounts === null && <p className="text-sm text-muted-foreground">Cargando…</p>}
+      {accounts?.length === 0 && (
+        <p className="text-sm text-muted-foreground">No hay cuentas conectadas.</p>
+      )}
+      {accounts?.map((account) => (
+        <div
+          key={account.id}
+          className="flex items-center gap-3 rounded-lg border p-3 text-sm"
+        >
+          <ChannelIcon channel={account.channel} className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium">{account.name ?? account.externalId}</span>
+          <span className="text-muted-foreground">{channelLabel(account.channel)}</span>
+          <span className="ml-auto font-mono text-xs text-muted-foreground">
+            {account.externalId}
+          </span>
+          {account.status === "connected" ? (
+            <Badge variant="success">conectada</Badge>
+          ) : (
+            <Badge variant="destructive">desconectada</Badge>
+          )}
+        </div>
+      ))}
+
+      <div className="flex gap-2 pt-2">
+        {CHANNELS.map((channel) => (
+          <Button key={channel} size="sm" variant="outline" onClick={() => connect(channel)}>
+            <ChannelIcon channel={channel} className="h-3.5 w-3.5" />
+            Conectar {channelLabel(channel)}
+          </Button>
+        ))}
+      </div>
     </div>
   );
 }

@@ -41,9 +41,11 @@ npm run build       # build de producción
 | `db:migrate` | Aplica `migrations/` contra PGlite (local) o Supabase (`DATABASE_URL`) |
 | `db:counts` | Conteo de filas por tabla (verificación de la Fase 1) |
 | `db:seed` | Datos de demo: conversaciones y mensajes de los tres canales |
+| `db:reset` | Borra la base local y la vuelve a crear (PGlite corrupto o demo fresh) |
 | `zernio` | CLI contra la API real: lista cuentas y conversaciones |
 | `webhook:register` | Registra/actualiza el webhook por API (busca por nombre) |
 | `backfill` | Importa historial del proveedor (sin disparar el agente) |
+| `test:webhook` | Prueba de idempotencia del webhook (requiere `npm run dev` corriendo) |
 
 ## Fases
 
@@ -53,3 +55,7 @@ npm run build       # build de producción
 4. Bandeja: listar, abrir y responder
 5. Agente por canal
 6. Deploy, conexión de cuentas y barridos
+
+El detalle de reglas, trampas y decisiones de arquitectura está en
+[CLAUDE.md](./CLAUDE.md); el paso a paso de producción en
+[DEPLOY.md](./DEPLOY.md).

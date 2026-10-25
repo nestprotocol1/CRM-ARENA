@@ -15,7 +15,8 @@
     "zernio": "tsx scripts/zernio-cli.ts",
     "webhook:register": "tsx scripts/register-webhook.ts",
     "backfill": "tsx scripts/backfill.ts",
-    "test:webhook": "tsx scripts/test-webhook-idempotency.ts"
+    "test:webhook": "tsx scripts/test-webhook-idempotency.ts",
+    "db:reset": "rm -rf .data/pglite && npm run db:migrate && npm run db:seed"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.11",
