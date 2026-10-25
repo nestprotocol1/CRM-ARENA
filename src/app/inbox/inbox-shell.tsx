@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 import { ConversationRow } from "@/lib/queries";
+import { useRealtimeRefresh } from "@/hooks/use-realtime-refresh";
 import type { Channel } from "@/lib/zernio/types";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,11 @@ export function InboxShell({
 }) {
   const router = useRouter();
   const [q, setQ] = useState(activeQ);
+
+  // La lista se actualiza sola cuando entra un mensaje o cambia una
+  // conversación (nuevo hilo, no leídos, handover). Sin Realtime configurado,
+  // el hook no hace nada y la lista se refresca al navegar.
+  useRealtimeRefresh([{ table: "conversations" }, { table: "messages" }]);
 
   const applyFilters = useCallback(
     (next: { q?: string; channel?: string }) => {

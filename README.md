@@ -47,6 +47,18 @@ npm run build       # build de producción
 | `backfill` | Importa historial del proveedor (sin disparar el agente) |
 | `test:webhook` | Prueba de idempotencia del webhook (requiere `npm run dev` corriendo) |
 
+## Puesta en producción (Supabase + Vercel + Zernio)
+
+```bash
+npm run db:migrate                                  # crea las 7 tablas en Supabase
+# Supabase Dashboard -> SQL Editor -> correr supabase/setup.sql   (Realtime + RLS)
+git push                                            # Vercel deploya (migraciones en el build)
+npm run webhook:register -- https://tu-app.vercel.app
+```
+
+Detalle completo, variables de entorno y tabla de fallos en
+[DEPLOY.md](./DEPLOY.md).
+
 ## Fases
 
 1. ✅ Modelo de datos y migración

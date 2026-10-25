@@ -19,6 +19,7 @@ import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 import { MessageInput } from "./message-input";
 import { ConversationDetail } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { useRealtimeRefresh } from "@/hooks/use-realtime-refresh";
 
 interface LocalMessage {
   id: string;
@@ -49,11 +50,23 @@ export function ChatPanel({ detail }: { detail: ConversationDetail }) {
     fetch(`/api/conversations/${conversation.id}/read`, { method: "POST" }).catch(() => {});
   }, [conversation.id, detail.conversation.unreadCount]);
 
-  // Refresco liviano: el agente responde en segundo plano (after()).
+  // Refresco: Realtime si está configurado; si no, polling de 5s.
+  // El agente responde en segundo plano (after()), así que el aviso tiene que
+  // llegar solo: sin realtime ni polling, la respuesta aparecería recién al
+  // recargar.
+  const realtime = useRealtimeRefresh(
+    conversation.id
+      ? [
+          { table: "messages", filter: `conversation_id=eq.${conversation.id}` },
+          { table: "conversations", filter: `id=eq.${conversation.id}` },
+        ]
+      : [{ table: "messages" }],
+  );
   useEffect(() => {
+    if (realtime) return;
     const timer = setInterval(() => router.refresh(), 5000);
     return () => clearInterval(timer);
-  }, [router]);
+  }, [router, realtime]);
 
   // Scroll al fondo cuando cambian los mensajes.
   useEffect(() => {
